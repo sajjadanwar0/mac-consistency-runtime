@@ -24,7 +24,6 @@ pub mod store;
 pub mod vanilla;
 pub mod lib_si_validate_exec;
 pub mod verified_si;
-mod lib_si_commit_invariant;
 
 pub use agent::{Agent, Emitter, VecEmitter};
 pub use detectors::{
