@@ -1,2 +1,11 @@
 # Project exclude paths
 /target/
+# --- Rust / Cargo ---
+/target/
+**/target/
+*.rs.bk
+
+# --- Verus ---
+.verus/
+.verus-log/
+*.smt2
