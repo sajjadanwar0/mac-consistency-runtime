@@ -25,7 +25,8 @@ pub mod vanilla;
 pub mod lib_si_validate_exec;
 pub mod verified_si;
 pub mod l2_causal;
-
+mod l3_sequencer;
+pub mod l4_registry;
 
 pub use agent::{Agent, Emitter, VecEmitter};
 pub use detectors::{
