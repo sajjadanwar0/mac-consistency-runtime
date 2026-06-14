@@ -1,29 +1,13 @@
-//! `Agent`: an agent-facing API over a `Store`.
-//!
-//! The agent owns a session ID, a reference to a `Store`, and an emitter
-//! for `OpRecord`s. The pattern is:
-//!
-//!   let mut a = Agent::new("editor", store, emitter);
-//!   a.begin(&["doc"], None);
-//!   ... agent does stuff ...
-//!   a.commit(&[("doc", "new value")], None);
-//!
-//! On a conflict (begin or commit), the operation is silently dropped: no
-//! OpRecord is emitted but the runtime's abort counter increments. The
-//! agent owner can choose to retry or proceed.
-
 use crate::oprecord::{CellId, OpRecord, ToolId, Value};
 use crate::store::{CommitOutcome, Snapshot, Store};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A simple JSONL emitter; thread-safe via Mutex.
 pub trait Emitter: Send + Sync {
     fn emit(&self, record: &OpRecord);
 }
 
-/// Append-only Vec emitter (good for tests).
 #[derive(Default)]
 pub struct VecEmitter {
     pub records: Mutex<Vec<OpRecord>>,
@@ -78,19 +62,19 @@ impl Agent {
         }
     }
 
-    /// Begin an operation. If the runtime aborts, the op is marked as such
-    /// and `commit()` will not emit; this is the pessimistic-locking
-    /// non-blocking acquisition pattern.
     pub fn begin(
         &self,
         read_set: &[CellId],
         planned_tool: Option<ToolId>,
     ) -> Result<(), &'static str> {
         let mut pending = self.pending.lock();
+
         if pending.is_some() {
             return Err("begin during pending op");
         }
+
         let result = self.store.begin(&self.agent_id, read_set);
+
         match result {
             Ok(snapshot) => {
                 *pending = Some(Pending {
@@ -102,8 +86,8 @@ impl Agent {
                 });
                 Ok(())
             }
+
             Err(_) => {
-                // Aborted at begin: mark pending so commit() is consistent.
                 *pending = Some(Pending {
                     snapshot: Snapshot {
                         values: BTreeMap::new(),
@@ -125,8 +109,8 @@ impl Agent {
         tool_used: Option<ToolId>,
     ) -> Result<bool, &'static str> {
         let p = self.pending.lock().take().ok_or("commit without begin")?;
+
         if p.aborted_at_begin {
-            // Drop. Aborted at begin already counted by the store.
             return Ok(false);
         }
 
@@ -173,16 +157,12 @@ impl Agent {
         Ok(true)
     }
 
-    /// Tick the clock for a no-write operation and emit a no-write record.
     pub fn no_write_commit(&self, tool_used: Option<ToolId>) -> Result<bool, &'static str> {
         let p = self.pending.lock().take().ok_or("commit without begin")?;
         if p.aborted_at_begin {
             return Ok(false);
         }
 
-        // Under SI with validate_no_write=true (SSI), a no-write commit
-        // still validates. We use the empty-writes path so the store
-        // decides.
         let outcome = self.store.commit(&self.agent_id, &p.snapshot, &BTreeMap::new());
 
         let write_time = match outcome {
@@ -213,9 +193,11 @@ impl Agent {
             io: vec![],
             co: vec![],
         };
+
         self.emitter.emit(&record);
 
         self.store.release(&self.agent_id);
+
         Ok(true)
     }
 }

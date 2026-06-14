@@ -1,6 +1,3 @@
-//! Vanilla store: no concurrency control. The "uninstrumented control"
-//! baseline. Used as the comparator for pessimistic and SI.
-
 use crate::oprecord::{CellId, Time, Value};
 use crate::store::{CommitOutcome, Snapshot, Store};
 use parking_lot::Mutex;

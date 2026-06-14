@@ -1,15 +1,3 @@
-//! Pessimistic-locking store.
-//!
-//! Per-cell locks acquired at begin() and held until commit() or release().
-//! Acquisition is non-blocking: a conflict on any cell aborts the whole
-//! begin (releases anything held so far) and returns Err.
-//!
-//! Expected behaviour against the four anomalies:
-//!   A_1 (stale-generation):       PREVENTED via begin-time exclusivity
-//!   A_2 (phantom-tool):           NOT addressed at the store level
-//!   A_3 (causal-cascade):         PREVENTED (no concurrent writers in window)
-//!   A_6 (tool-effect-reorder):    NOT addressed (within-record property)
-
 use crate::oprecord::{CellId, Time, Value};
 use crate::store::{CommitOutcome, Snapshot, Store};
 use parking_lot::Mutex;
@@ -20,9 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 struct Inner {
     data: BTreeMap<CellId, Value>,
     clock: Time,
-    /// Cell -> agent currently holding it.
     cell_holders: HashMap<CellId, String>,
-    /// Agent -> set of cells they hold.
     agent_holds: HashMap<String, HashSet<CellId>>,
 }
 
@@ -50,7 +36,6 @@ impl Store for PessimisticStore {
     fn begin(&self, agent: &str, cells: &[CellId]) -> Result<Snapshot, &'static str> {
         let mut g = self.inner.lock();
 
-        // Try to acquire all `cells`. If any is held by another agent, abort.
         for c in cells {
             if let Some(holder) = g.cell_holders.get(c) {
                 if holder != agent {
@@ -60,7 +45,6 @@ impl Store for PessimisticStore {
             }
         }
 
-        // All clear: register holds.
         for c in cells {
             g.cell_holders.insert(c.clone(), agent.to_string());
             g.agent_holds
@@ -92,19 +76,18 @@ impl Store for PessimisticStore {
     ) -> CommitOutcome {
         let mut g = self.inner.lock();
 
-        // Acquire locks on any write cells we don't already hold.
         let new_writes: Vec<CellId> = writes
             .keys()
             .filter(|c| !g.cell_holders.get(*c).is_some_and(|h| h == agent))
             .cloned()
             .collect();
+
         for c in &new_writes {
             if g.cell_holders.contains_key(c) {
-                // We already filtered out cells we hold; this means another
-                // agent holds it. Pessimistic semantics: abort the commit.
                 return CommitOutcome::AbortedConflict;
             }
         }
+        
         for c in &new_writes {
             g.cell_holders.insert(c.clone(), agent.to_string());
             g.agent_holds
@@ -113,12 +96,14 @@ impl Store for PessimisticStore {
                 .insert(c.clone());
         }
 
-        // Commit writes.
         g.clock += 1;
+
         let commit_time = g.clock;
+
         for (k, v) in writes {
             g.data.insert(k.clone(), v.clone());
         }
+
         CommitOutcome::Committed {
             write_time: commit_time,
         }
