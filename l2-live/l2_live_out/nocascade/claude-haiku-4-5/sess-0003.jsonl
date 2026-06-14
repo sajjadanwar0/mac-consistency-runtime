@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Audit order status fields and restore single source of truth."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Audit order status fields and restore single source of truth."},"read_time":1,"write_set":["result"],"write_values":{"result":"Consolidated order status fields into unified database schema, eliminating duplicates."},"write_time":2,"preds":[0],"aborted":false}

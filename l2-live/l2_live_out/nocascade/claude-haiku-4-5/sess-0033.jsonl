@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Check refund policy for 100-day eligibility; deny or escalate accordingly."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Check refund policy for 100-day eligibility; deny or escalate accordingly."},"read_time":1,"write_set":["result"],"write_values":{"result":"Verified 100-day refund policy eligibility; escalated to supervisor for decision."},"write_time":2,"preds":[0],"aborted":false}

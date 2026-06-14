@@ -9,3 +9,7 @@
 .verus/
 .verus-log/
 *.smt2
+
+# live-experiment output and build
+/l2_live_out/
+/l2-live/target/

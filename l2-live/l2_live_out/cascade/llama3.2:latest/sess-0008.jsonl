@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Schedule a call with customer to gather more error description information."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Schedule a call with customer to gather more error description information."},"read_time":1,"write_set":["result"],"write_values":{"result":"Scheduled a 30-minute call with the customer for tomorrow afternoon."},"write_time":2,"preds":[0],"aborted":false}

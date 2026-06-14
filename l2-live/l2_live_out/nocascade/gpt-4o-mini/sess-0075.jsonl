@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Resolve status conflict by reviewing changes from both agents."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Resolve status conflict by reviewing changes from both agents."},"read_time":1,"write_set":["result"],"write_values":{"result":"Reviewed changes from both agents to resolve status conflict."},"write_time":2,"preds":[0],"aborted":false}

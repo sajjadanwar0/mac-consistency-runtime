@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Reassign assignment to an existing reviewer or create new one immediately."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Reassign assignment to an existing reviewer or create new one immediately."},"read_time":1,"write_set":["result"],"write_values":{"result":"Reassigned/re-created assignment to ensure timely completion by designated reviewer."},"write_time":2,"preds":[0],"aborted":false}

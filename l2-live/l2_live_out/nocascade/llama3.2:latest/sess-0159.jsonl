@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Move issue to a designated engineer for re-review and assignment."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Move issue to a designated engineer for re-review and assignment."},"read_time":1,"write_set":["result"],"write_values":{"result":"Moved issue to assigned engineer for re-review and further assessment."},"write_time":2,"preds":[0],"aborted":false}

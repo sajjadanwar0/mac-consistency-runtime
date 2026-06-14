@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Verify vendor's documentation for original quote to ensure accuracy."},"write_time":1,"preds":[],"aborted":true}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Verify vendor's documentation for original quote to ensure accuracy."},"read_time":1,"write_set":["result"],"write_values":{"result":"Verified vendor's documentation against original quote for accuracy purposes completed."},"write_time":2,"preds":[0],"aborted":false}

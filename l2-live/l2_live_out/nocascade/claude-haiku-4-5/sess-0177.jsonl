@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Check refund policy window; deny if outside standard return period."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Check refund policy window; deny if outside standard return period."},"read_time":1,"write_set":["result"],"write_values":{"result":"Checked return window; customer outside 30-day period—refund denied."},"write_time":2,"preds":[0],"aborted":false}

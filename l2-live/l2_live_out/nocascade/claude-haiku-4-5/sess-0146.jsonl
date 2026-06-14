@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Verify user identity and reset password if login unconfirmed."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Verify user identity and reset password if login unconfirmed."},"read_time":1,"write_set":["result"],"write_values":{"result":"Identity verified, password reset link sent to registered email."},"write_time":2,"preds":[0],"aborted":false}

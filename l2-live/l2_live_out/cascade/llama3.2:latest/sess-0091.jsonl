@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Reconcile agent edits and resolve conflicting order status immediately."},"write_time":1,"preds":[],"aborted":true}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Reconcile agent edits and resolve conflicting order status immediately."},"read_time":1,"write_set":["result"],"write_values":{"result":"Confirmed edit reconciliations with order status updates are now resolved."},"write_time":2,"preds":[0],"aborted":true}

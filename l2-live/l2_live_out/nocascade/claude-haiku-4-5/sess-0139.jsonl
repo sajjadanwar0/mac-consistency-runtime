@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Audit order revision history and reconcile to single authoritative status."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Audit order revision history and reconcile to single authoritative status."},"read_time":1,"write_set":["result"],"write_values":{"result":"Reviewed order revision logs and consolidated to single authoritative status record."},"write_time":2,"preds":[0],"aborted":false}

@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Contact customer for more details about the app issue."},"write_time":1,"preds":[],"aborted":false}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Contact customer for more details about the app issue."},"read_time":1,"write_set":["result"],"write_values":{"result":"Contacted customer for additional information regarding the app issue."},"write_time":2,"preds":[0],"aborted":false}

@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Suspend data deletion until the dispute is resolved."},"write_time":1,"preds":[],"aborted":true}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Suspend data deletion until the dispute is resolved."},"read_time":1,"write_set":["result"],"write_values":{"result":"Data deletion suspended pending resolution of the dispute."},"write_time":2,"preds":[0],"aborted":true}

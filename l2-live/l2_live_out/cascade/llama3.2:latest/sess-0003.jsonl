@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Revert order to original status before further discrepancies occur."},"write_time":1,"preds":[],"aborted":true}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Revert order to original status before further discrepancies occur."},"read_time":1,"write_set":["result"],"write_values":{"result":"Reverted system to previous configuration, eliminating current discrepancies."},"write_time":2,"preds":[0],"aborted":true}

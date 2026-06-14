@@ -1,0 +1,2 @@
+{"txn":0,"agent":"planner","read_set":[],"read_values":{},"read_time":0,"write_set":["plan"],"write_values":{"plan":"Approve the refund as a customer goodwill gesture."},"write_time":1,"preds":[],"aborted":true}
+{"txn":1,"agent":"executor","read_set":["plan"],"read_values":{"plan":"Approve the refund as a customer goodwill gesture."},"read_time":1,"write_set":["result"],"write_values":{"result":"Refund approved as a goodwill gesture to the customer."},"write_time":2,"preds":[0],"aborted":true}
