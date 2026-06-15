@@ -1,0 +1,17 @@
+[package]
+name = "l3-probe"
+version = "0.1.0"
+edition = "2024"
+description = "Non-vacuity gate for L3-live: measures whether fire-and-forget async effect commit reorders vs intended order (A6) under live agents, before committing to the full l3-live driver"
+
+[dependencies]
+ureq = { version = "2.9", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "l3_probe"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
