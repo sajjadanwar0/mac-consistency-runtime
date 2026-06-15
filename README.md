@@ -1,30 +1,60 @@
-# agent-consistency-runtime
+# mac-consistency-runtime
 
-Reference Rust runtime that integrates the Verus-verified detectors
-from `verus_lib_v3.rs` with three concurrency-control backends. This is
-the artefact referenced in §6 of the paper as the principal Rust
-deliverable.
+Reference Rust runtime for the paper **Verified Detection and Prevention of
+Concurrency Anomalies in Multi-Agent LLM Systems**. It implements the
+consistency-control backends of the L₀–L₄ lattice over a common `Store` trait,
+ports the four Verus-verified anomaly detectors to executable Rust, and — via
+the `l2-live/` driver — runs the verified L₂ discipline under live LLM agents.
+
+This is the artifact referenced in §6 as the principal Rust deliverable, plus
+the live-deployment harness for §5 (executable L₂ runtime).
 
 ## Honest scope (read this first)
 
 This crate **is**:
-- A working Rust library implementing three runtime backends (vanilla,
-  pessimistic locking, snapshot isolation with optional SSI mode) over a
-  common `Store` trait
-- An agent-facing API (`Agent`) that emits `OpRecord` events compatible
-  with the JSONL traces produced by the Python pilot
-- A Rust port of the four anomaly detectors that are verified sound and
-  complete in `verus_lib_v3.rs`
-- A self-contained crate that compiles standalone
+- Working Rust backends over a common `Store` trait: an unsynchronized baseline,
+  pessimistic locking, snapshot isolation (with optional SSI), and the L₂/L₃/L₄
+  discipline models (causal tracking with cascading abort, an effect sequencer,
+  a registry-snapshot model).
+- A Rust port of the four detectors (`detect_a1/a2/a3/a6`) proved sound *and*
+  complete in Verus, written to mirror the Verus source line-for-line.
+- A live-agent driver (`l2-live/`) that drives the **real** `L2CausalStore`
+  under OpenAI / Anthropic / OpenAI-compatible (vLLM, Ollama) models and measures
+  A₃ prevention.
 
 This crate **is not**:
-- Verified Rust. The detectors mirror the verified Verus version by
-  inspection; the runtimes themselves are unverified.
-- Production-grade. There's no error-recovery, no observability, no
-  performance tuning. This is a reference implementation, not a
-  deployable agent runtime.
-- Connected to LLMs. The agents are programmatic; integrating real LLM
-  reasoning agents is left to the consumer.
+- Fully verified Rust. The detectors mirror the verified Verus versions by
+  inspection; the locking and SI runtimes are unverified (their L₂ counterpart
+  carries a separate exec-mode refinement in the Verus development). `verified_si.rs`
+  and `lib_si_validate_exec.rs` are Verus source — standard `cargo build`/`cargo test`
+  compiles and runs them as ordinary Rust; the Verus toolchain is needed only to
+  *re-check* their proofs.
+- Production-grade. No error recovery, observability, or tuning — a reference
+  implementation, not a deployable agent runtime.
+
+## Layout
+
+```
+src/
+  lib.rs                  re-exports
+  oprecord.rs             OpRecord (canonical record: read/write sets, io/co, times)
+  store.rs                Store trait (begin / commit / tick / release)
+  vanilla.rs              unsynchronized baseline (admits A1)
+  pessimistic.rs          per-cell locks, non-blocking acquire
+  snapshot_isolation.rs   MVCC + commit-time validation, optional SSI mode
+  verified_si.rs          Verus-exec SI validation
+  lib_si_validate_exec.rs Verus-exec SI validation lemma support
+  l2_causal.rs            L2: causal tracking + cascading abort; detect_a3_cascade; twin experiment
+  l3_sequencer.rs         L3: tool-effect ordering model (A6)
+  l4_registry.rs          L4: registry-snapshot model (A2)
+  detectors.rs            Rust ports of the four Verus-verified detectors
+  agent.rs                Agent API + Emitter trait (VecEmitter)
+tests/
+  integration.rs          end-to-end tests across the backends
+l2-live/                  live-agent driver (separate crate; see below)
+  Cargo.toml
+  src/main.rs
+```
 
 ## Build and test
 
@@ -33,95 +63,65 @@ cargo build
 cargo test
 ```
 
-`cargo test` runs the integration tests in `tests/integration.rs`,
-which reproduce the empirical findings of the paper:
+`cargo test` runs `tests/integration.rs` and the in-module tests, reproducing
+the paper's runnable findings:
 
-- Vanilla admits A_1 in the edit-review shape (test:
-  `vanilla_admits_a1`).
-- Pessimistic locking blocks at begin and produces clean traces
-  (test: `pessimistic_blocks_at_begin`).
-- SI aborts at validation when committing writes (test:
-  `si_aborts_on_validation`).
-- **SI default misses the no-write stale-read shape** that surfaces the
-  3% triage gap (test: `si_default_misses_no_write_stale`).
-- **SSI mode closes the gap** by validating every commit (test:
-  `ssi_mode_closes_no_write_gap`).
+- Vanilla admits A₁ in the edit-review shape (`vanilla_admits_a1`).
+- Pessimistic locking blocks at begin and produces clean traces.
+- SI aborts at validation when committing writes; **default-SI misses the
+  no-write stale-read shape** (the 3% triage gap), and **SSI mode closes it**.
+- `l2_causal` tests: the unguarded baseline admits A₃ in 1000/1000 scenarios at
+  depths {2,3,5}; the L₂ cascade discipline admits it in **0/1000**, including
+  transitive cascades (the dependency-free twin).
 
-The last two tests are the runnable counterpart to §5.5's empirical
-finding.
+## Detector ↔ spec correspondence
 
-## Layout
+`detect_a1/a2/a3/a6` are the executable counterparts of the Verus-verified
+detectors (proved sound **and** complete against the TLA+ predicates in
+`mac-consistency`). For black-box traces that expose neither causal closures nor
+abort flags, `detect_a3` uses the flat-trace *residue* formulation it is proved
+equivalent to. The runtimes are established by code inspection against the
+operational model (§3), the integration tests, and equivalence in spirit with
+the Python baselines in `mac-consistency-pilot/python/baselines/`.
 
-```
-src/
-  lib.rs              re-exports
-  oprecord.rs         OpRecord struct (canonical record format)
-  store.rs            Store trait
-  vanilla.rs          unsynchronized baseline
-  pessimistic.rs      per-cell locks, non-blocking acquire
-  snapshot_isolation.rs   MVCC + commit-time validation, optional SSI mode
-  agent.rs            Agent API + Emitter trait
-  detectors.rs        Rust port of the four Verus-verified detectors
-tests/
-  integration.rs      end-to-end tests across all three backends
-```
+## `l2-live`: live A₃ prevention under real agents
 
-## Spec-to-implementation correspondence
+`l2-live/` is a standalone binary that exercises the **real** L₂ runtime — it
+pulls in `src/l2_causal.rs` via `#[path]` (no fork, no `vstd` dependency) and
+drives `L2CausalStore` from a live plan→execute→revise loop: a planner commits a
+plan for an ambiguous triage ticket, an executor reads it (acquiring the planner
+as a causal predecessor) and commits a result, and a supervisor LLM decides
+whether to retract the plan (the live analogue of saga compensation). It scores
+every trace with the verified `detect_a3_cascade` and reports per-model and
+pooled prevention with rule-of-three CIs and executor-liveness.
 
-The four detectors in `src/detectors.rs` (`detect_a1`, `detect_a2`,
-`detect_a3`, `detect_a6`) are the executable counterparts of the
-Verus-verified versions in `verus_lib_v3.rs`. The Verus chain proves
-soundness AND completeness equivalence with the TLA+ predicate. This
-crate's detectors are written to mirror the Verus code line-for-line so
-the inspection cost of trusting the equivalence is small.
+```bash
+cd l2-live
+# validate the wiring with no API calls (reproduces the synthetic twin)
+cargo run --release -- --dry-run --n 200
 
-The runtimes (`vanilla`, `pessimistic`, `snapshot_isolation`) are
-**not** Verus-verified. Their correctness is established by:
-
-1. Code inspection against §3 (operational model) of the paper
-2. Integration tests that exercise the runtime against expected
-   detector outcomes
-3. Equivalence (in spirit) with the Python baselines in
-   `mac-consistency-pilot/python/baselines/runtimes/`
-
-A natural follow-up is to verify the runtimes themselves. The locking
-runtime is the closest to existing verified-concurrency artifacts
-(IronFleet, Verdi); the SI/MVCC runtime would require a more substantial
-proof effort.
-
-## Use as a library
-
-```rust
-use std::sync::Arc;
-use agent_consistency_runtime::{Agent, PessimisticStore, Store, VecEmitter};
-
-fn main() {
-    let store: Arc<dyn Store> = Arc::new(PessimisticStore::new());
-    let emitter = Arc::new(VecEmitter::new());
-    let alice = Agent::new("alice", store.clone(), emitter.clone(), vec![]);
-
-    alice.begin(&["doc".to_string()], None).unwrap();
-    alice.commit(&[("doc".to_string(), "hello".to_string())], None).unwrap();
-
-    let records = emitter.drain();
-    println!("{} records emitted", records.len());
-    println!("conflicts: {}, aborts: {}", store.begin_conflicts(), store.aborts());
-}
+# live runs (set keys; --validator llm lets each model decide retraction)
+OPENAI_API_KEY=…    cargo run --release -- --provider openai    --model gpt-4o-mini       --validator llm --n 200
+ANTHROPIC_API_KEY=… cargo run --release -- --provider anthropic --model claude-haiku-4-5  --validator llm --n 200
+cargo run --release -- --provider vllm --base-url http://localhost:11434 --model llama3.2:latest --validator llm --n 200
 ```
 
-## What's missing for a paper-grade artefact
+**Measured result.** Across three model families the supervisor-driven
+retraction rate — the trigger for A₃ — spanned **0%** (claude-haiku-4-5, a
+permissive supervisor), **15.5%** (gpt-4o-mini), and **44.5%** (Llama-3.2). In
+all **120** retracted sessions pooled across the three models, the unguarded
+baseline left an A₃ witness; the verified L₂ discipline prevented every one
+(**0/120, 95% CI [0, 2.5%]**), at 80% pooled executor-liveness. The prevention
+is structural — the executor depends on the planner because it read the plan
+cell, and the verified cascade removes the dependent whenever its predecessor is
+retracted — so 0% holds by construction of the verified discipline regardless of
+model; the live runs demonstrate it operating under real, divergent agent
+behavior, not a model-contingent property.
 
-To turn this from a reference implementation into something a reviewer
-calls "production-grade":
+## Status of the higher levels
 
-1. Async/Tokio integration so it's usable from real async agent runtimes
-2. JSONL emitter (write traces to disk in the same format as the Python
-   pilot, so the Python detector pipeline runs against Rust-emitted
-   traces)
-3. Performance benchmarks: latency overhead of pessimistic vs SI vs
-   vanilla under realistic concurrent agent workloads
-4. Adapters for real agent frameworks (AutoGen Python via FFI, or
-   Rust-native agent crates like `rig`)
-
-These are the items that would lift the Rust artefact from "reference"
-to "deployable." None are in scope for this paper version.
+L₂ is verified, twin-measured, **and** deployed live (above). L₃ and L₄ are
+verified and twin-measured but **not** yet run under live agents: A₆ is a runtime
+write-sequencing property and the current `Agent::commit` always applies effects
+in intended order (`co = io`), so exercising it live would require a multi-effect
+commit path that reorders under concurrency — not yet built.
