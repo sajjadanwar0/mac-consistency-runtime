@@ -1,13 +1,22 @@
 # mac-consistency-runtime
 
 Reference Rust runtime for the paper **Verified Detection and Prevention of
-Concurrency Anomalies in Multi-Agent LLM Systems**. It implements the
-consistency-control backends of the L₀–L₄ lattice over a common `Store` trait,
-ports the four Verus-verified anomaly detectors to executable Rust, and — via
-the `l2-live/` driver — runs the verified L₂ discipline under live LLM agents.
+Concurrency Anomalies in Multi-Agent Large Language Model Systems**
+(arXiv:2606.xxxxx). It implements the consistency-control backends of the
+L₀–L₄ lattice over a common `Store` trait, ports the four Verus-verified
+anomaly detectors to executable Rust, and — via the `l2-live/` driver — runs
+the verified L₂ discipline under live LLM agents.
 
 This is the artifact referenced in §6 as the principal Rust deliverable, plus
 the live-deployment harness for §5 (executable L₂ runtime).
+
+**Companion repositories.** The TLA+/TLC/TLAPS specifications and proofs are in
+`mac-consistency`; the full Verus development (all proof files, 274 curated /
+295 full obligations, including the `lib_l2_safety.rs` / `lib_l*_exec.rs` /
+refinement proofs) is in `mac-consistency-pilot/verus-detector/`. This crate
+contains only the two Verus-exec helpers that back SI validation
+(`verified_si.rs`, `lib_si_validate_exec.rs`); everything else here is ordinary
+executable Rust.
 
 ## Honest scope (read this first)
 
@@ -17,7 +26,8 @@ This crate **is**:
   discipline models (causal tracking with cascading abort, an effect sequencer,
   a registry-snapshot model).
 - A Rust port of the four detectors (`detect_a1/a2/a3/a6`) proved sound *and*
-  complete in Verus, written to mirror the Verus source line-for-line.
+  complete in Verus (in `mac-consistency-pilot/verus-detector/`), written to
+  mirror the Verus source line-for-line.
 - A live-agent driver (`l2-live/`) that drives the **real** `L2CausalStore`
   under OpenAI / Anthropic / OpenAI-compatible (vLLM, Ollama) models and measures
   A₃ prevention.
@@ -25,10 +35,11 @@ This crate **is**:
 This crate **is not**:
 - Fully verified Rust. The detectors mirror the verified Verus versions by
   inspection; the locking and SI runtimes are unverified (their L₂ counterpart
-  carries a separate exec-mode refinement in the Verus development). `verified_si.rs`
-  and `lib_si_validate_exec.rs` are Verus source — standard `cargo build`/`cargo test`
-  compiles and runs them as ordinary Rust; the Verus toolchain is needed only to
-  *re-check* their proofs.
+  carries a separate exec-mode refinement in the Verus development —
+  `mac-consistency-pilot/verus-detector/lib_l2_exec.rs`, 49 verified).
+  `verified_si.rs` and `lib_si_validate_exec.rs` are Verus source — standard
+  `cargo build`/`cargo test` compiles and runs them as ordinary Rust; the Verus
+  toolchain is needed only to *re-check* their proofs.
 - Production-grade. No error recovery, observability, or tuning — a reference
   implementation, not a deployable agent runtime.
 
@@ -54,6 +65,7 @@ tests/
 l2-live/                  live-agent driver (separate crate; see below)
   Cargo.toml
   src/main.rs
+  l2_live_out/            recorded run outputs (git-ignored; zipped snapshot also present)
 ```
 
 ## Build and test
@@ -78,11 +90,13 @@ the paper's runnable findings:
 
 `detect_a1/a2/a3/a6` are the executable counterparts of the Verus-verified
 detectors (proved sound **and** complete against the TLA+ predicates in
-`mac-consistency`). For black-box traces that expose neither causal closures nor
-abort flags, `detect_a3` uses the flat-trace *residue* formulation it is proved
-equivalent to. The runtimes are established by code inspection against the
-operational model (§3), the integration tests, and equivalence in spirit with
-the Python baselines in `mac-consistency-pilot/python/baselines/`.
+`mac-consistency`; the proofs are in `mac-consistency-pilot/verus-detector/`,
+e.g. `lib_detector_equivalence.rs`, 24 verified). For black-box traces that
+expose neither causal closures nor abort flags, `detect_a3` uses the flat-trace
+*residue* formulation it is proved equivalent to. The runtimes are established
+by code inspection against the operational model (§3), the integration tests,
+and equivalence in spirit with the Python baselines in
+`mac-consistency-pilot/python/baselines/`.
 
 ## `l2-live`: live A₃ prevention under real agents
 
