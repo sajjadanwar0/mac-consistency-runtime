@@ -2,7 +2,7 @@
 
 Reference Rust runtime for the paper **Verified Detection and Prevention of
 Concurrency Anomalies in Multi-Agent Large Language Model Systems**
-(arXiv:2606.xxxxx). It implements the consistency-control backends of the
+(arXiv:2606.17182). It implements the consistency-control backends of the
 L₀–L₄ lattice over a common `Store` trait, ports the four Verus-verified
 anomaly detectors to executable Rust, and — via the `l2-live/` driver — runs
 the verified L₂ discipline under live LLM agents.
