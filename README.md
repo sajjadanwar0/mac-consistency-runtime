@@ -56,10 +56,12 @@ src/
   verified_si.rs          Verus-exec SI validation
   lib_si_validate_exec.rs Verus-exec SI validation lemma support
   l2_causal.rs            L2: causal tracking + cascading abort; detect_a3_cascade; twin experiment
-  l3_sequencer.rs         L3: tool-effect ordering model (A6)
+  l3_sequencer.rs         L3: commit-order sequencer (A6); exposed (pub), prevention twin
   l4_registry.rs          L4: registry-snapshot model (A2)
   detectors.rs            Rust ports of the four Verus-verified detectors
   agent.rs                Agent API + Emitter trait (VecEmitter)
+examples/
+  l3_deploy.rs            runnable L3 sequencer: baseline 1000/1000 vs L3 0/1000 (A6)
 tests/
   integration.rs          end-to-end tests across the backends
 l2-live/                  live-agent driver (separate crate; see below)
@@ -85,6 +87,13 @@ the paper's runnable findings:
 - `l2_causal` tests: the unguarded baseline admits A₃ in 1000/1000 scenarios at
   depths {2,3,5}; the L₂ cascade discipline admits it in **0/1000**, including
   transitive cascades (the dependency-free twin).
+
+The L₃ sequencer is exposed as a runnable runtime:
+
+```bash
+cargo run --example l3_deploy   # baseline A₆ 1000/1000 vs L₃ sequencer 0/1000, widths {2,4,8}
+cargo test l3_sequencer         # the L₃ prevention-twin tests
+```
 
 ## Detector ↔ spec correspondence
 
@@ -134,8 +143,20 @@ behavior, not a model-contingent property.
 
 ## Status of the higher levels
 
-L₂ is verified, twin-measured, **and** deployed live (above). L₃ and L₄ are
-verified and twin-measured but **not** yet run under live agents: A₆ is a runtime
-write-sequencing property and the current `Agent::commit` always applies effects
-in intended order (`co = io`), so exercising it live would require a multi-effect
-commit path that reorders under concurrency — not yet built.
+L₂ and L₃ are verified, twin-measured, **and** deployed live; L₄ remains
+verified and twin-measured but not yet run under live agents.
+
+The L₃ commit-order sequencer is exposed as a runnable runtime (`pub mod
+l3_sequencer`, `examples/l3_deploy.rs`) and measured live by the companion
+harness `mac-consistency-pilot/python/l3_live_a6.py`: a superstep executor
+issues four concurrent tool effects per session through real model calls and
+takes the asynchronous completion order as the reorder source — the in-the-wild
+cause of A₆, not a synthetic shuffle. Across gpt-4o-mini, claude-haiku-4-5, and
+locally-served Llama-3.2 (40 sessions each), the unsequenced baseline exhibited
+A₆ in **110/120** sessions (91.7%; per family 38/40, 39/40, 33/40) while the L₃
+sequencer prevented it in **0/120** (exact 95% upper bound 3.0%). This is a
+controlled multi-model harness; the in-the-wild instance remains LangGraph's
+`ToolNode` (`mac-consistency-pilot/python/langgraph_a6.py`).
+
+L₄ (registry-snapshot, A₂) is verified and twin-measured (`l4_registry.rs`); the
+analogous live registry-mutation harness is not yet built.

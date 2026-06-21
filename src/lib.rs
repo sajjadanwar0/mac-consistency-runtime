@@ -18,7 +18,7 @@ pub mod verified_si;
 pub mod l2_causal;
 
 #[allow(dead_code)]
-mod l3_sequencer;
+pub mod l3_sequencer;
 pub mod l4_registry;
 
 pub use agent::{Agent, Emitter, VecEmitter};
