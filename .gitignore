@@ -14,3 +14,5 @@
 /l2_live_out/
 /l2-live/target/
 .idea/
+[0-9]*_*.sh
+build.err

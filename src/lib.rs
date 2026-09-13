@@ -3,7 +3,10 @@ pub mod agent;
 pub mod detectors;
 
 pub mod oprecord;
+pub mod pess_concurrent;
 pub mod pessimistic;
+
+pub mod si_concurrent;
 
 pub mod snapshot_isolation;
 
