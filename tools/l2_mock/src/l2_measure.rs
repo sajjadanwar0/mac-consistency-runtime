@@ -17,21 +17,27 @@
 //! payload runs one scenario N times and its rule-of-three interval
 //! presumes an independence it does not have.
 //!
-//! THE ONE UNVERIFIED PIECE, NAMED.
+//! THE DECIDER IS NOW VERIFIED.
+//! `L2Runtime::can_commit` carries `ensures b == commit_valid(self.view(),
+//! t as int)` -- two-sided, so branching on it establishes `commit`'s
+//! precondition by proof. This driver calls it. An earlier version called
+//! `commit_gate`, a hand transcription in this file, which is now deleted:
+//! a verified decision procedure that the measurement does not call is the
+//! same equivocation as measuring a twin instead of the verified runtime.
+//! The two agreed on all 3,000 scenarios before the transcription was
+//! removed.
+//!
+//! HISTORICAL NOTE ON THE OLD UNVERIFIED PATH.
 //! `L2Runtime::commit` takes `commit_valid(view, t)` as a precondition
 //! and the crate ships no verified decision procedure for it.  Plain
 //! cargo erases preconditions, so the caller must establish it.
-//! `commit_gate` transcribes `commit_valid` conjunct for conjunct with
-//! no carve-out and the driver refuses the commit when it is false, so
-//! every `commit` issued here satisfies the precondition.  `commit_gate`
-//! is NOT verified.  Proving it sound and complete against
-//! `commit_valid`, the way `lib_si_concurrent.rs::validate` is proved
-//! against `fresh`, is the remaining step.
+//! Before `can_commit` existed, this driver transcribed `commit_valid` by
+//! hand, and that transcription was the last unverified link in the L2
+//! chain. It is gone.
 //!
-//! `commit_gate` reads the transaction's cells from the caller's own
-//! list rather than from `read_set`, because vstd's `HashSetWithView`
-//! exposes no iterator.  The two coincide by construction: `read` is the
-//! only path by which a cell enters `read_set`.
+//! `can_commit` reads `read_set` directly, which is why that field is a
+//! `Vec`: vstd's `HashSetWithView` exposes no iterator, so `reads_fresh`
+//! could not be decided in exec mode while it was a hash set.
 
 use crate::l2_exec::L2Runtime;
 use crate::l2_unguarded::UnguardedStore;
@@ -60,35 +66,6 @@ pub fn detect_a3(trace: &[Prov]) -> Option<(u64, u64)> {
         }
     }
     None
-}
-
-/// Conjunct-for-conjunct transcription of `lib_l2_exec.rs::commit_valid`.
-/// UNVERIFIED -- see the module header.
-pub fn commit_gate(rt: &L2Runtime, t: u64, cells: &[u64]) -> bool {
-    let txn = match rt.txns.get(&t) {
-        Some(x) => x,
-        None => return false,
-    };
-    if !txn.started || txn.committed || txn.aborted {
-        return false;
-    }
-    for c in cells {
-        let observed = match txn.read_values.get(c) {
-            Some(v) => *v,
-            None => return false,
-        };
-        match rt.cell_value.get(c) {
-            Some(current) if *current == observed => {}
-            _ => return false,
-        }
-    }
-    for p in &txn.predecessors {
-        match rt.txns.get(p) {
-            Some(q) if q.committed && !q.aborted => {}
-            _ => return false,
-        }
-    }
-    true
 }
 
 /// The SUPERSEDED gate, transcribed from l2_causal.rs:126-128 so the
@@ -172,7 +149,7 @@ pub fn run_guarded(seed: u64, depth: usize) -> Outcome {
 
     let root = rt.begin();
     rt.write(root, base, 40 + seed % 5);
-    if !commit_gate(&rt, root, &[]) {
+    if !rt.can_commit(root) {
         return Outcome { a3: false, cascaded: 0, refused: 1 };
     }
     rt.commit(root);
@@ -195,13 +172,13 @@ pub fn run_guarded(seed: u64, depth: usize) -> Outcome {
         if s.interleave && k % 2 == 0 {
             let c = rt.begin();
             rt.write(c, rc, 900 + k as u64);
-            if commit_gate(&rt, c, &[]) {
+            if rt.can_commit(c) {
                 rt.commit(c);
                 committed.push(c);
             }
         }
 
-        if commit_gate(&rt, t, &[rc]) {
+        if rt.can_commit(t) {
             rt.commit(t);
             committed.push(t);
             written.push(wc);
@@ -361,7 +338,7 @@ mod tests {
         let mut rt = L2Runtime::new();
         let a = rt.begin();
         rt.write(a, 1, 10);
-        assert!(commit_gate(&rt, a, &[]));
+        assert!(rt.can_commit(a));
         rt.commit(a);
 
         let b = rt.begin();
@@ -370,12 +347,13 @@ mod tests {
 
         let c = rt.begin();
         rt.write(c, 1, 99);
-        assert!(commit_gate(&rt, c, &[]));
+        assert!(rt.can_commit(c));
         rt.commit(c);
 
         assert!(
-            !commit_gate(&rt, b, &[1]),
-            "commit_gate accepted a stale read of a cell the transaction writes"
+            !rt.can_commit(b),
+            "the VERIFIED decision procedure accepted a stale read of a cell the \
+             transaction writes; commit_valid forbids it"
         );
         assert!(
             carve_out_gate(&rt, b, &[1], &[1]),

@@ -1,0 +1,12 @@
+{
+ "id": "gpt-4o-mini-0036",
+ "model": "gpt-4o-mini",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 313,
+ "result_value": 1778,
+ "retracted": false,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Investigate the sync logs for errors related to the affected tenants.",
+ "supervisor_verdict": "KEEP"
+}

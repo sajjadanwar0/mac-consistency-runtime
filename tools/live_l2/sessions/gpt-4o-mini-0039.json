@@ -1,0 +1,12 @@
+{
+ "id": "gpt-4o-mini-0039",
+ "model": "gpt-4o-mini",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 634,
+ "result_value": 1368,
+ "retracted": false,
+ "ticket": "Login works, but SSO users land on a blank page after redirect.",
+ "plan": "Investigate SSO configuration and check for authentication token issues.",
+ "supervisor_verdict": "KEEP"
+}

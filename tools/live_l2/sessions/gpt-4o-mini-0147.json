@@ -1,0 +1,12 @@
+{
+ "id": "gpt-4o-mini-0147",
+ "model": "gpt-4o-mini",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 586,
+ "result_value": 1564,
+ "retracted": true,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Investigate and resolve indexing errors for deleted documents.",
+ "supervisor_verdict": "RETRACT"
+}

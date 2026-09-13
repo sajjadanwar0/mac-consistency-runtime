@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0186",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 978,
+ "result_value": 1461,
+ "retracted": true,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Index all deleted documents and verify they're properly marked with a deletion flag before investigating the search query logic.",
+ "supervisor_verdict": "RETRACT\n\nThe plan is backwards. Indexing deleted documents defeats the purpose of deletion and creates data integrity issues. The correct approach would be to investigate why the search query logic is returning deleted documents that should already be excluded, then fix the search logic itself."
+}

@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0187",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 251,
+ "result_value": 1869,
+ "retracted": false,
+ "ticket": "Checkout fails intermittently for EU customers with 'currency not supported'.",
+ "plan": "Conduct A/B testing to determine if the issue is related to currency symbol vs. numeric value representation for EU currencies.",
+ "supervisor_verdict": "KEEP"
+}

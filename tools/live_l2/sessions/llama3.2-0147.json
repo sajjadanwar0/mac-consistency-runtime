@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0147",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 103,
+ "result_value": 1200,
+ "retracted": false,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Verify document deletion date and scope of search results.",
+ "supervisor_verdict": "KEEP"
+}

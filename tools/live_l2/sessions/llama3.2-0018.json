@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0018",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 439,
+ "result_value": 1046,
+ "retracted": false,
+ "ticket": "Checkout fails intermittently for EU customers with 'currency not supported'.",
+ "plan": "Conduct thorough analysis of payment gateway integrations and currency support for European markets to identify the root cause.",
+ "supervisor_verdict": "KEEP"
+}

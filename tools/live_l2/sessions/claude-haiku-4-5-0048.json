@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0048",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 194,
+ "result_value": 1426,
+ "retracted": false,
+ "ticket": "Login works, but SSO users land on a blank page after redirect.",
+ "plan": "Investigate redirect URL handling and SSO callback endpoint to verify it's rendering the dashboard component instead of blank content.",
+ "supervisor_verdict": "KEEP"
+}

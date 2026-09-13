@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0058",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 135,
+ "result_value": 1055,
+ "retracted": false,
+ "ticket": "Checkout fails intermittently for EU customers with 'currency not supported'.",
+ "plan": "Investigate payment processor API logs for EU currency handling failures and check if recent config changes affected supported currency list.",
+ "supervisor_verdict": "KEEP"
+}

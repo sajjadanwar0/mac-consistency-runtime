@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0182",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 311,
+ "result_value": 1594,
+ "retracted": false,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Check nightly sync logs for errors on those three tenants and verify their last successful data refresh timestamp.",
+ "supervisor_verdict": "KEEP"
+}

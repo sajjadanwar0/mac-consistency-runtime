@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0142",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 300,
+ "result_value": 1788,
+ "retracted": false,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Check replication lag in the data warehouse and restart failed ETL jobs for those three tenants.",
+ "supervisor_verdict": "KEEP"
+}

@@ -1,0 +1,12 @@
+{
+ "id": "gpt-4o-mini-0051",
+ "model": "gpt-4o-mini",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 644,
+ "result_value": 1040,
+ "retracted": false,
+ "ticket": "Users report the export button does nothing on Safari; logs show a 404 on /api/export.",
+ "plan": "Investigate and resolve the 404 error on /api/export for Safari users.",
+ "supervisor_verdict": "KEEP"
+}

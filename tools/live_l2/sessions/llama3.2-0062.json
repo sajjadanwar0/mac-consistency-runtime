@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0062",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 498,
+ "result_value": 1160,
+ "retracted": false,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Re-run search query on original data source, excluding soft-deleted files.",
+ "supervisor_verdict": "KEEP"
+}

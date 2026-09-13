@@ -3,7 +3,6 @@
 //@ reinclude-textual: lib_l2_safety.rs
 use vstd::prelude::*;
 use vstd::hash_map::HashMapWithView;
-use vstd::hash_set::HashSetWithView;
 
 verus! {
 pub type CellId  = int;
@@ -369,6 +368,13 @@ pub open spec fn inv_read_provenance(s: RuntimeState) -> bool {
     forall |tt: TxnId, cc: CellId| #![trigger s.txns[tt].read_set.contains(cc)]
         (s.txns.contains_key(tt) && s.txns[tt].read_set.contains(cc))
         ==> s.txns[tt].read_from.contains_key(cc)
+            // The read VALUE's domain. True by construction -- read()
+            // pushes cc onto read_set and inserts (cc,v) into read_values
+            // in one step -- but never previously stated, which left
+            // reads_fresh undecidable in exec mode: Verus's Map index is
+            // total, so outside the domain the comparison is against an
+            // arbitrary fixed value no executable code can compute.
+            && s.txns[tt].read_values.contains_key(cc)
             && s.txns[tt].predecessors.contains(s.txns[tt].read_from[cc])
             && s.txns.contains_key(s.txns[tt].read_from[cc])
             && s.txns[s.txns[tt].read_from[cc]].write_set.contains(cc)
@@ -1392,7 +1398,12 @@ pub struct ExecTxn {
     pub started:      bool,
     pub committed:    bool,
     pub aborted:      bool,
-    pub read_set:     HashSetWithView<u64>,
+    // A Vec, not a HashSetWithView, so that reads_fresh is DECIDABLE in exec
+    // mode: vstd's HashSetWithView exposes no iterator, and a precondition no
+    // exec function can evaluate is one the caller must be trusted with.
+    // Duplicates are absorbed by view_vec_u64_set, so the ABSTRACT read_set is
+    // unchanged and every theorem over TxnState holds verbatim.
+    pub read_set:     Vec<u64>,
     pub read_values:  HashMapWithView<u64, u64>,
     pub writes:       Vec<(u64, u64)>,
     pub predecessors: Vec<u64>,
@@ -1407,7 +1418,7 @@ impl ExecTxn {
             started:      self.started,
             committed:    self.committed,
             aborted:      self.aborted,
-            read_set:     view_u64_set(self.read_set@),
+            read_set:     view_vec_u64_set(self.read_set@),
             read_values:  view_u64_map(self.read_values@),
             write_set:    writes_set(self.writes@),
             write_values: writes_map(self.writes@),
@@ -1424,7 +1435,7 @@ impl ExecTxn {
         broadcast use vstd::std_specs::hash::group_hash_axioms;
         let r = ExecTxn {
             started: true, committed: false, aborted: false,
-            read_set:     HashSetWithView::new(),
+            read_set:     Vec::new(),
             read_values:  HashMapWithView::new(),
             writes:       Vec::new(),
             predecessors: Vec::new(),
@@ -1433,7 +1444,8 @@ impl ExecTxn {
             commit_time:  0,
         };
         proof {
-            assert(view_u64_set(r.read_set@) =~= Set::<int>::empty());
+            lemma_vec_set_empty();
+            assert(view_vec_u64_set(r.read_set@) =~= Set::<int>::empty());
             assert(writes_set(r.writes@) =~= Set::<int>::empty());
             assert(view_vec_u64_set(r.predecessors@) =~= Set::<int>::empty());
             assert(view_u64_map(r.read_values@) =~= Map::<int, int>::empty());
@@ -1454,6 +1466,28 @@ pub open spec fn view_txns_map(m: Map<u64, ExecTxn>) -> Map<int, TxnState> {
 }
 pub open spec fn view_alltxns(m: Map<u64, ExecTxn>) -> Set<int> {
     Set::new(|t: int| in_u64(t) && m.contains_key(t as u64))
+}
+
+/// Bridge from a u64-keyed hash-map lookup to the abstract txn map.
+///
+/// Every other exec function here mutates through txns.remove(&t).unwrap()
+/// and re-inserts, so lemma_view_txns_insert covers them. can_commit takes
+/// &self and only reads, which needs the other direction.
+pub proof fn lemma_txns_get_view(m: Map<u64, ExecTxn>, k: u64)
+    ensures
+        view_txns_map(m).contains_key(k as int) <==> m.contains_key(k),
+        m.contains_key(k) ==> view_txns_map(m)[k as int] == m[k].view(),
+{
+    lemma_u64_roundtrip(k);
+}
+
+/// The same bridge for a u64-keyed value map.
+pub proof fn lemma_cells_get_view(m: Map<u64, u64>, c: u64)
+    ensures
+        view_u64_map(m).contains_key(c as int) <==> m.contains_key(c),
+        m.contains_key(c) ==> view_u64_map(m)[c as int] == m[c] as int,
+{
+    lemma_u64_roundtrip(c);
 }
 
 pub proof fn lemma_view_txns_insert(m: Map<u64, ExecTxn>, k: u64, v: ExecTxn)
@@ -1776,6 +1810,174 @@ impl L2Runtime {
     // commit: publish txn t's writes and mark it committed. Refines
     // step_commit; preserves wf via lemma_commit_preserves_inv_l2. The
     // discipline (only commit when valid) is the commit_valid precondition.
+    /// A VERIFIED decision procedure for commit_valid.
+    ///
+    /// Two-sided, so a caller that branches on it establishes commit's
+    /// precondition by proof rather than by transcription. Same shape as
+    /// lib_si_concurrent.rs::validate for the L1 gate.
+    ///
+    /// Two things make it possible, both stated where they are used.
+    /// read_set is a Vec because HashSetWithView has no iterator. And
+    /// every negative assertion is phrased through self.view() rather
+    /// than through the borrowed txn, because reads_fresh triggers on
+    /// s.txns[t].read_set.contains(c) and predecessors_clean on
+    /// s.txns.contains_key(p): a semantically equal term that is not the
+    /// same TERM never instantiates the quantifier.
+    pub fn can_commit(&self, t: u64) -> (b: bool)
+        requires
+            self.wf(),
+        ensures
+            b == commit_valid(self.view(), t as int),
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        let ghost sv = self.view();
+        proof { lemma_u64_roundtrip(t); lemma_txns_get_view(self.txns@, t); }
+
+        if !self.txns.contains_key(&t) {
+            proof { assert(!sv.txns.contains_key(t as int)); }
+            return false;
+        }
+        let txn: &ExecTxn = self.txns.get(&t).unwrap();
+        proof { assert(sv.txns[t as int] == txn.view()); }
+
+        if !txn.started || txn.committed || txn.aborted { return false; }
+
+        let rn: usize = txn.read_set.len();
+        let mut i: usize = 0;
+        while i < rn
+            invariant
+                0 <= i <= rn,
+                rn == txn.read_set.len(),
+                sv == self.view(),
+                self.txns@.contains_key(t),
+                self.txns@[t] == *txn,
+                sv.txns[t as int] == txn.view(),
+                // A loop invariant is the ONLY thing a Verus loop body can
+                // assume about the enclosing context. self.wf() is a
+                // precondition of can_commit, not of the loop, so without
+                // this line inv_read_provenance is unavailable inside the
+                // body -- which is exactly what failed at the
+                // read_values.contains_key step. self is &self and never
+                // mutated here, so both hold trivially.
+                self.wf(),
+                inv_read_provenance(sv),
+                forall |k: int| 0 <= k < i ==> {
+                    let cc = #[trigger] txn.read_set@[k];
+                    &&& sv.cell_value.contains_key(cc as int)
+                    &&& sv.txns[t as int].read_values.contains_key(cc as int)
+                    &&& sv.cell_value[cc as int] == sv.txns[t as int].read_values[cc as int]
+                },
+            decreases rn - i
+        {
+            let c: u64 = txn.read_set[i];
+            proof {
+                lemma_u64_roundtrip(c);
+                lemma_cells_get_view(self.cell_value@, c);
+                // the witness, in the TRIGGER's own term
+                assert(sv.txns[t as int].read_set.contains(c as int));
+            }
+            if !self.cell_value.contains_key(&c) {
+                proof {
+                    assert(!sv.cell_value.contains_key(c as int));
+                    assert(!reads_fresh(sv, t as int));
+                }
+                return false;
+            }
+            // read_values.contains_key(c) holds by inv_read_provenance
+            // (Stage C), so this lookup cannot fail.
+            proof {
+                assert(inv_read_provenance(sv));
+                assert(sv.txns[t as int].read_values.contains_key(c as int));
+                lemma_cells_get_view(txn.read_values@, c);
+            }
+            let cur: u64 = *self.cell_value.get(&c).unwrap();
+            let obs: u64 = *txn.read_values.get(&c).unwrap();
+            if cur != obs {
+                proof {
+                    assert(sv.cell_value[c as int] == cur as int);
+                    assert(sv.txns[t as int].read_values[c as int] == obs as int);
+                    assert(!reads_fresh(sv, t as int));
+                }
+                return false;
+            }
+            i = i + 1;
+        }
+        proof {
+            assert forall |c: int| #[trigger] sv.txns[t as int].read_set.contains(c) implies {
+                &&& sv.cell_value.contains_key(c)
+                &&& sv.cell_value[c] == sv.txns[t as int].read_values[c]
+            } by {
+                assert(exists |k: int| 0 <= k < rn && txn.read_set@[k] as int == c);
+                let k = choose |k: int| 0 <= k < rn && txn.read_set@[k] as int == c;
+                lemma_u64_roundtrip(txn.read_set@[k]);
+                assert(sv.txns[t as int].read_values.contains_key(c));
+            }
+            assert(reads_fresh(sv, t as int));
+        }
+
+        let pn: usize = txn.predecessors.len();
+        let mut j: usize = 0;
+        while j < pn
+            invariant
+                0 <= j <= pn,
+                pn == txn.predecessors.len(),
+                sv == self.view(),
+                self.txns@.contains_key(t),
+                self.txns@[t] == *txn,
+                sv.txns[t as int] == txn.view(),
+                self.wf(),
+                inv_read_provenance(sv),
+                reads_fresh(sv, t as int),
+                forall |k: int| 0 <= k < j ==> {
+                    let pp = #[trigger] txn.predecessors@[k];
+                    &&& sv.txns.contains_key(pp as int)
+                    &&& sv.txns[pp as int].committed
+                    &&& !sv.txns[pp as int].aborted
+                },
+            decreases pn - j
+        {
+            let p: u64 = txn.predecessors[j];
+            proof {
+                lemma_u64_roundtrip(p);
+                lemma_txns_get_view(self.txns@, p);
+                assert(sv.txns[t as int].predecessors.contains(p as int));
+            }
+            if !self.txns.contains_key(&p) {
+                proof {
+                    assert(!sv.txns.contains_key(p as int));
+                    assert(!predecessors_clean(sv, t as int));
+                }
+                return false;
+            }
+            let q: &ExecTxn = self.txns.get(&p).unwrap();
+            proof { assert(sv.txns[p as int] == q.view()); }
+            if !q.committed || q.aborted {
+                proof {
+                    assert(sv.txns[p as int].committed == q.committed);
+                    assert(sv.txns[p as int].aborted == q.aborted);
+                    assert(!predecessors_clean(sv, t as int));
+                }
+                return false;
+            }
+            j = j + 1;
+        }
+        proof {
+            assert forall |p: int| #[trigger] sv.txns[t as int].predecessors.contains(p) implies {
+                &&& sv.txns.contains_key(p)
+                &&& sv.txns[p].committed
+                &&& !sv.txns[p].aborted
+            } by {
+                assert(exists |k: int| 0 <= k < pn && txn.predecessors@[k] as int == p);
+                let k = choose |k: int| 0 <= k < pn && txn.predecessors@[k] as int == p;
+                lemma_u64_roundtrip(txn.predecessors@[k]);
+                lemma_txns_get_view(self.txns@, txn.predecessors@[k]);
+            }
+            assert(predecessors_clean(sv, t as int));
+            assert(commit_valid(sv, t as int));
+        }
+        true
+    }
+
     pub fn commit(&mut self, t: u64)
         requires
             old(self).wf(),
@@ -2032,8 +2234,8 @@ impl L2Runtime {
 
         // read_set, read_values, read_from, read_at.
         let ghost rs0 = txn.read_set@;
-        txn.read_set.insert(c);
-        proof { lemma_view_set_insert(rs0, c); }
+        txn.read_set.push(c);
+        proof { lemma_vec_set_push(rs0, c); }
         let ghost rv0 = txn.read_values@;
         txn.read_values.insert(c, v);
         proof { lemma_view_map_insert(rv0, c, v); }

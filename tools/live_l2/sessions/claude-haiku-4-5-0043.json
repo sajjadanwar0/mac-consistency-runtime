@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0043",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 273,
+ "result_value": 1664,
+ "retracted": false,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Investigate search index synchronization with document deletion events and add cascade cleanup logic to remove deleted documents from search indices.",
+ "supervisor_verdict": "KEEP"
+}

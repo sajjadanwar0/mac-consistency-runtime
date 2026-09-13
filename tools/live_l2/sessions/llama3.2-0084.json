@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0084",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 538,
+ "result_value": 1318,
+ "retracted": false,
+ "ticket": "Users report the export button does nothing on Safari; logs show a 404 on /api/export.",
+ "plan": "Reach out to Apple Developer support for possible issues with Safari's 3rd-party cookie policy.",
+ "supervisor_verdict": "KEEP"
+}

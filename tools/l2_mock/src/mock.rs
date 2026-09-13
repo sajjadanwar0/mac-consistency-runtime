@@ -59,6 +59,27 @@ impl L2Runtime {
         self.now += 1;
     }
 
+    /// Mirrors the now-VERIFIED L2Runtime::can_commit, whose postcondition
+    /// is `b == commit_valid(self.view(), t as int)`. No write-set
+    /// carve-out, all six conjuncts.
+    pub fn can_commit(&self, t: u64) -> bool {
+        let txn = match self.txns.0.get(&t) { Some(x) => x, None => return false };
+        if !txn.started || txn.committed || txn.aborted { return false; }
+        for c in &txn.read_set {
+            match (self.cell_value.0.get(c), txn.read_values.get(c)) {
+                (Some(cur), Some(obs)) if cur == obs => {}
+                _ => return false,
+            }
+        }
+        for p in &txn.predecessors {
+            match self.txns.0.get(p) {
+                Some(q) if q.committed && !q.aborted => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
     pub fn commit(&mut self, t: u64) {
         assert!(self.txns.0.contains_key(&t), "commit: requires txns.contains_key(t)");
         let ws = self.txns.0[&t].writes.clone();

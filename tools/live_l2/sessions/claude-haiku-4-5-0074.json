@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0074",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 998,
+ "result_value": 1692,
+ "retracted": false,
+ "ticket": "Users report the export button does nothing on Safari; logs show a 404 on /api/export.",
+ "plan": "Check if /api/export endpoint is deployed and reachable, then verify Safari isn't sending a different request path or headers that breaks the API call.",
+ "supervisor_verdict": "KEEP"
+}

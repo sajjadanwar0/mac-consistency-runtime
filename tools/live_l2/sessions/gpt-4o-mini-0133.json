@@ -1,0 +1,12 @@
+{
+ "id": "gpt-4o-mini-0133",
+ "model": "gpt-4o-mini",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 543,
+ "result_value": 1298,
+ "retracted": false,
+ "ticket": "Checkout fails intermittently for EU customers with 'currency not supported'.",
+ "plan": "Investigate the currency conversion settings and regional configurations for the EU customer base.",
+ "supervisor_verdict": "KEEP"
+}

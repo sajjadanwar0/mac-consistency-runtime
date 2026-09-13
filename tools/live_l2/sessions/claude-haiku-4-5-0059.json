@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0059",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 584,
+ "result_value": 1324,
+ "retracted": false,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Investigate sync logs for those three tenants and check for cache invalidation failures or partial data commits.",
+ "supervisor_verdict": "KEEP"
+}

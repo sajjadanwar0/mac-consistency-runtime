@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0026",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 539,
+ "result_value": 1200,
+ "retracted": true,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Trigger automated dashboard re-sync for all tenants that have been idle for >30 minutes.",
+ "supervisor_verdict": "RETRACT"
+}

@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0116",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 213,
+ "result_value": 1688,
+ "retracted": false,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Re-run the search query using the ETD (End Time Date) field instead of the creation date.",
+ "supervisor_verdict": "KEEP"
+}

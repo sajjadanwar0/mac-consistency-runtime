@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0190",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 733,
+ "result_value": 1223,
+ "retracted": false,
+ "ticket": "Login works, but SSO users land on a blank page after redirect.",
+ "plan": "Reproduce the issue with SSO users to identify any potential errors or exceptions.",
+ "supervisor_verdict": "KEEP"
+}

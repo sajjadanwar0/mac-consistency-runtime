@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0064",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 990,
+ "result_value": 1597,
+ "retracted": true,
+ "ticket": "Users report the export button does nothing on Safari; logs show a 404 on /api/export.",
+ "plan": "Check Safari's console for any additional errors related to 404 or network requests when clicking the export button.",
+ "supervisor_verdict": "RETRACT"
+}

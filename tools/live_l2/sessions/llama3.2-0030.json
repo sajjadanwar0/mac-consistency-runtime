@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0030",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 366,
+ "result_value": 1193,
+ "retracted": false,
+ "ticket": "Checkout fails intermittently for EU customers with 'currency not supported'.",
+ "plan": "Investigate and implement support for \u20ac as the default currency for EU regions.",
+ "supervisor_verdict": "KEEP"
+}

@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0164",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 974,
+ "result_value": 1188,
+ "retracted": false,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Investigate and refresh dashboards for all three affected tenants immediately.",
+ "supervisor_verdict": "KEEP."
+}

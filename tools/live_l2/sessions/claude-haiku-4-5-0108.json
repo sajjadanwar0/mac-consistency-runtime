@@ -1,0 +1,12 @@
+{
+ "id": "claude-haiku-4-5-0108",
+ "model": "claude-haiku-4-5",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 675,
+ "result_value": 1340,
+ "retracted": false,
+ "ticket": "Search returns results for deleted documents.",
+ "plan": "Investigate search index not properly handling document deletion flags and rebuild/purge stale entries.",
+ "supervisor_verdict": "KEEP"
+}

@@ -1,0 +1,12 @@
+{
+ "id": "llama3.2-0050",
+ "model": "llama3.2",
+ "plan_cell": 1,
+ "result_cell": 2,
+ "plan_value": 219,
+ "result_value": 1032,
+ "retracted": true,
+ "ticket": "Nightly sync finished but three tenants show stale dashboards.",
+ "plan": "Notify IT team to investigate dashboard caching issue.",
+ "supervisor_verdict": "RETRACT"
+}
