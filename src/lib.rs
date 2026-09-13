@@ -21,20 +21,19 @@ pub mod verified_si;
 // The VERIFIED L2 runtime, byte-identical to
 // ../mac-consistency-pilot/verus-detector/src/lib_l2_exec.rs, compiled
 // here by plain cargo with the verus! macro erasing the proofs -- the
-// same discipline as si_concurrent.rs and pess_concurrent.rs.
+// same discipline as si_concurrent.rs and pess_concurrent.rs. Every
+// erased `requires` clause is a caller obligation; see l2_measure.rs.
 pub mod l2_exec;
 
 // The L1-class baseline: validates reads, does not cascade. Ordinary
-// Rust, no safety claim.
+// Rust, no proofs, no safety claim -- the behaviour L2 removes.
 pub mod l2_unguarded;
 
 // The measurement driver: guarded arm is l2_exec, unguarded arm is
-// l2_unguarded, and the two are run over the same seeded schedules.
+// l2_unguarded, both over the same seed-varied schedules. Also holds
+// carve_out_gate and the differential test that pins the superseded
+// gate as strictly weaker than commit_valid.
 pub mod l2_measure;
-
-// Superseded L2-class store. Its guarded path carries a write-set
-// carve-out that commit_valid does not have; nothing should cite it.
-pub mod l2_causal;
 
 #[allow(dead_code)]
 pub mod l3_sequencer;
