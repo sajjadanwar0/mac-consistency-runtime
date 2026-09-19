@@ -31,9 +31,10 @@ This crate **is**:
   complete in Verus (in `mac-consistency-pilot/verus-detector/`), written to
   mirror the Verus source line-for-line.
 - The verified L₂ runtime (`src/l2_exec.rs`, byte-identical to
-  `mac-consistency-pilot/verus-detector/src/lib_l2_exec.rs`) measured against an
-  unguarded baseline (`examples/l2_measure.rs`), and 600 recorded live-agent
-  sessions (`tools/live_l2/sessions`) replayed through both
+  `mac-consistency-pilot/verus-detector/src/lib_l2_exec.rs`) measured against two
+  release-at-commit baselines, an unguarded store and the superseded cascade
+  design (`examples/l2_measure.rs`), and 600 recorded live-agent sessions
+  (`tools/live_l2/sessions`) replayed through all three
   (`examples/l2_replay.rs`), and a live driver (`l2-live/`) that runs model
   agents on the verified runtime with output commit releasing the executor's
   effect.
@@ -65,18 +66,19 @@ src/
   lib_si_validate_exec.rs Verus-exec SI validation lemma support
   l2_exec.rs              L2: the verified runtime (output commit, cascading abort), Verus source
   l2_unguarded.rs         L2 baseline: releases effects at commit, does not cascade
-  l2_measure.rs           L2 measurement: verified runtime vs baseline; A3 detectors
-  l2_replay_lib.rs        L2 replay of recorded live sessions through both arms
+  l2_cascade.rs           L2 baseline: the superseded design, releases at commit AND cascades (wraps l2_unguarded)
+  l2_measure.rs           L2 measurement, three arms; both A3 detectors; `exposed`, a count that reads no flag
+  l2_replay_lib.rs        L2 replay of recorded live sessions through all three arms
   l3_sequencer.rs         L3: commit-order sequencer (A6); exposed (pub), prevention twin
   l4_exec.rs              L4: the verified dispatcher (validates against the live registry), Verus source
   l4_registry.rs          L4 measurement: verified dispatcher vs live and snapshot resolution (A2)
   detectors.rs            Rust ports of the four Verus-verified detectors
   agent.rs                Agent API + Emitter trait (VecEmitter)
 examples/
-  l2_measure.rs           verified L2 runtime vs unguarded baseline, depths {2,3,5}
-  l2_replay.rs            replay tools/live_l2/sessions through both arms
+  l2_measure.rs           verified L2 runtime vs unguarded and cascade baselines, depths {2,3,5}
+  l2_replay.rs            replay tools/live_l2/sessions through all three arms
   l4_measure.rs           verified L4 dispatcher vs live and snapshot resolution, widths {2,4,16}
-  l3_deploy.rs            runnable L3 sequencer: baseline 1000/1000 vs L3 0/1000 (A6)
+  l3_deploy.rs            runnable L3 sequencer: baseline 487, 955, 1000 of 1000 at widths {2,4,8} vs L3 0/1000 (A6)
 tests/
   integration.rs          end-to-end tests across the backends
   l2_exec_predecessors.rs L2: readers of retracted writers cannot commit
@@ -101,25 +103,58 @@ the paper's runnable findings:
 - Vanilla admits A₁ in the edit-review shape (`vanilla_admits_a1`).
 - Pessimistic locking blocks at begin and produces clean traces.
 - SI aborts at validation when committing writes; **default-SI misses the
-  no-write stale-read shape** (the 3% triage gap), and **SSI mode closes it**.
+  no-write stale-read shape** (the silent residual the pilot measures at 8% on
+  triage and 5% on edit-review, run `20260913T0150Z`), and **SSI mode closes it**.
 - `l2_measure` tests: A₃ is an operation whose effects are out while an
   operation in its causal closure is aborted. Over 1000 seeded scenarios at
   depths {2,3,5}, each with one committed transaction under review (retracted or
-  approved, sometimes reviewed only after it released), the verified L₂ runtime
-  admits A₃ in **0/1000** at every depth and the unguarded baseline, which
-  releases at commit, in some scenarios but not all. Output commit holds effects
-  somewhere, refuses some late retractions, and releases every live effect after
-  the review.
+  approved, sometimes reviewed only after it released), three arms run the same
+  schedules: the verified L₂ runtime (output commit), an unguarded baseline
+  (releases at commit, does not cascade), and the superseded design
+  (`l2_cascade.rs`: releases at commit **and** cascades). The verified runtime
+  admits A₃ in **0/1000** at every depth, and both release-at-commit arms admit
+  it equally often. The superseded design satisfies the *overruled* A₃ (no
+  surviving dependent) in every scenario while doing so: its cascade flags
+  dependents whose effects are already out. Both predicates read flags the
+  runtime under test sets for itself, so every arm also reports **exposed
+  effects**, effects that are out although the review asked to withdraw their
+  basis, which reads no flag. On it the two release-at-commit arms are identical
+  and the verified runtime is *not* zero: it is exposed in exactly the scenarios
+  where it refused a late retraction.
 
 ```bash
 cargo run --release --example l2_measure
 ```
 
-| depth | verified A₃ | baseline A₃ | cascaded | commits refused | effects held | released / live | retractions refused |
+| depth | A₃ verified | A₃ unguarded | A₃ cascade | overruled A₃ verified | overruled A₃ unguarded | overruled A₃ cascade | relabeled after release (cascade) |
 |---|---|---|---|---|---|---|---|
-| 2 | 0/1000 | 519/1000 | 564 | 830 | 748 | 2870 / 2870 | 199 / 771 |
-| 3 | 0/1000 | 624/1000 | 940 | 1177 | 1255 | 3494 / 3494 | 199 / 771 |
-| 5 | 0/1000 | 563/1000 | 889 | 1677 | 1272 | 5545 / 5545 | 199 / 771 |
+| 2 | 0/1000 | 519/1000 | 519/1000 | 0/1000 | 519/1000 | 0/1000 | 767 |
+| 3 | 0/1000 | 624/1000 | 624/1000 | 0/1000 | 624/1000 | 0/1000 | 1288 |
+| 5 | 0/1000 | 563/1000 | 563/1000 | 0/1000 | 563/1000 | 0/1000 | 1239 |
+
+| depth | exposed effects, verified (scenarios) | exposed effects, unguarded (scenarios) | exposed effects, cascade (scenarios) |
+|---|---|---|---|
+| 2 | 402 (199) | 1538 (771) | 1538 (771) |
+| 3 | 547 (199) | 2059 (771) | 2059 (771) |
+| 5 | 549 (199) | 2010 (771) | 2010 (771) |
+
+| depth | cascaded (verified) | commits refused | effects held | released / live | retractions refused |
+|---|---|---|---|---|---|
+| 2 | 564 | 830 | 748 | 2870 / 2870 | 199 / 771 |
+| 3 | 940 | 1177 | 1255 | 3494 / 3494 | 199 / 771 |
+| 5 | 889 | 1677 | 1272 | 5545 / 5545 | 199 / 771 |
+
+  What these tables show, and what they do not. Every figure is decided by the
+  schedule and the store, not by chance: a release-at-commit arm's A₃ count is
+  the number of schedules in which the retracted operation had a committed
+  dependent, and the verified arm's exposure is the harness's late-review rate
+  (one review in four arrives after release, 199 of 771 retractions at every
+  depth, because the review is drawn from the seed independently of depth). What
+  the three arms establish is structural. A cascade without output commit
+  changes flags and not effects: identical A₃ and identical exposure to the
+  unguarded baseline, with 767 to 1288 dependents relabeled after release.
+  Output commit removes exposure exactly when the review precedes release and
+  cannot when it does not; the refused retractions are that residue.
 
 - `l4_registry` tests: A₂ is a call that reaches a tool revoked, or re-signed,
   since its operation planned. Over 1000 seeded runs at widths {2,4,16}, each
@@ -144,7 +179,7 @@ cargo run --release --example l4_measure
 The L₃ sequencer is exposed as a runnable runtime:
 
 ```bash
-cargo run --example l3_deploy   # baseline A₆ 1000/1000 vs L₃ sequencer 0/1000, widths {2,4,8}
+cargo run --example l3_deploy   # baseline A₆ 487, 955, 1000 of 1000 vs L₃ sequencer 0/1000, widths {2,4,8}
 cargo test l3_sequencer         # the L₃ prevention-twin tests
 ```
 
@@ -167,26 +202,29 @@ records each session: a planner commits a one-line plan for an ambiguous triage
 ticket, an executor reads it (acquiring the planner as a causal predecessor) and
 commits a result, and a supervisor model decides whether to retract the plan.
 600 sessions are committed, 200 per model. `examples/l2_replay.rs` replays every
-session through the verified runtime and through the unguarded baseline, with no
-API key:
+session through the verified runtime, the unguarded baseline and the superseded
+cascade design, with no API key:
 
 ```bash
 cargo run --release --example l2_replay -- tools/live_l2/sessions
 ```
 
-| model | sessions | retracted | verified A₃ | baseline A₃ | executor released (verified) |
-|---|---|---|---|---|---|
-| claude-haiku-4-5 | 200 | 1 | 0/1 | 1/1 | 99.5% |
-| gpt-4o-mini | 200 | 3 | 0/3 | 3/3 | 98.5% |
-| llama3.2 | 200 | 62 | 0/62 | 62/62 | 69.0% |
-| POOLED | 600 | 66 | 0/66 | 66/66 | 89.0% |
+| model | sessions | retracted | verified A₃ | baseline A₃ | cascade A₃ | cascade, overruled A₃ | executor released (verified) |
+|---|---|---|---|---|---|---|---|
+| claude-haiku-4-5 | 200 | 1 | 0/1 | 1/1 | 1/1 | 0/1 | 99.5% |
+| gpt-4o-mini | 200 | 3 | 0/3 | 3/3 | 3/3 | 0/3 | 98.5% |
+| llama3.2 | 200 | 62 | 0/62 | 62/62 | 62/62 | 0/62 | 69.0% |
+| POOLED | 600 | 66 | 0/66 | 66/66 | 66/66 | 0/66 | 89.0% |
 
 What this shows, and what it does not. A recorded session holds the supervisor's
 verdict, not when effects left, so the replay applies one release policy to
 every session. The baseline releases at commit: each retraction leaves the
 executor's effects out on a withdrawn plan. The verified runtime keeps the plan
 under review until the verdict, so the executor's release is refused until KEEP
-releases the plan, and RETRACT aborts both before either is out. The zero is
+releases the plan, and RETRACT aborts both before either is out. The superseded
+design releases at commit and then cascades: on all 66 retracted sessions it
+flags the executor aborted, so the overruled predicate reads 0/66, after the
+executor's effect is out, so the current one reads 66/66. The zero is
 structural (output commit, proved in `lib_l2_safety.rs` and run here from
 `src/l2_exec.rs`); the live component measures only how often real supervisors
 retract.

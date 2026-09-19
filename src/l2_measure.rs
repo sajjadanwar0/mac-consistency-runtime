@@ -63,9 +63,29 @@
 //! released, and the verified runtime then refuses the retraction: released
 //! effects need compensation, not abort. Both costs are measured -- effects
 //! held, and retractions refused -- next to the anomaly count.
+//!
+//! 2026-09-19 round 33: A THIRD ARM, AND A COUNT THAT READS NO FLAG.
+//! With two arms the overruled predicate and the current one agreed in every
+//! cell -- 519/519, 624/624, 563/563 on the baseline, 0/0 on the verified
+//! runtime -- so nothing here showed that the change of definition in rounds
+//! 23-28 mattered. It could not have: `UnguardedStore` releases every
+//! transaction at commit and never flags a dependent, so on its traces
+//! `externalized == committed` and `aborted` is set on the reviewed operation
+//! alone, which makes the two predicates the same predicate. The arm that
+//! separates them is the superseded design itself (`l2_cascade::CascadeStore`:
+//! release at commit AND cascade): the overruled predicate reads zero on it
+//! while the current one fires exactly as often as on the unguarded baseline.
+//! Both A3 predicates still read flags that the runtime under test sets for
+//! itself, so every arm also reports `exposed`: effects that are OUT although
+//! the review asked to withdraw their basis. It reads no abort flag. On it the
+//! two release-at-commit arms are identical, and the verified runtime is NOT
+//! zero: it is exposed in exactly the scenarios where it refused a retraction.
+//! OVERRULED (rounds 28-32): a two-valued arm switch on `run_experiment`, two
+//! arms, and a refusal count reported without what it left in the world.
 
 use std::collections::BTreeSet;
 
+use crate::l2_cascade::CascadeStore;
 use crate::l2_exec::L2Runtime;
 use crate::l2_unguarded::UnguardedStore;
 
@@ -121,6 +141,27 @@ pub fn detect_a3_unpropagated(trace: &[Prov]) -> Option<(u64, u64)> {
         }
     }
     None
+}
+
+/// Effects that are OUT although the review asked to withdraw their basis:
+/// the reviewed operation itself and every operation with it in its causal
+/// closure, counted when externalized. This reads no abort flag. It asks the
+/// same question of every arm -- what reached the world -- whereas both A3
+/// predicates read flags the runtime under test sets for itself.
+pub fn exposed_effects(trace: &[Prov], reviewed: u64, retraction_asked: bool) -> u64 {
+    if !retraction_asked {
+        return 0;
+    }
+    trace
+        .iter()
+        .filter(|r| r.externalized && (r.txn == reviewed || closure(trace, r).contains(&reviewed)))
+        .count() as u64
+}
+
+/// Dependents flagged aborted AFTER their effects were out: R5's class
+/// (lib_a3_residue.rs), the operations the flat-trace projection drops.
+pub fn relabeled_after_release(trace: &[Prov], reviewed: u64) -> u64 {
+    trace.iter().filter(|r| r.txn != reviewed && r.aborted && r.externalized).count() as u64
 }
 
 /// The SUPERSEDED gate, transcribed from l2_causal.rs:126-128 so the
@@ -204,6 +245,10 @@ pub struct Outcome {
     pub live: u64,
     /// the review asked for a retraction and the runtime refused it
     pub retraction_refused: bool,
+    /// effects out although the review asked to withdraw their basis (no flag read)
+    pub exposed: u64,
+    /// dependents flagged aborted after their effects were out
+    pub relabeled: u64,
 }
 
 fn trace_of_runtime(rt: &L2Runtime) -> Vec<Prov> {
@@ -319,15 +364,102 @@ pub fn run_guarded(seed: u64, depth: usize) -> Outcome {
         released: trace.iter().filter(|x| x.externalized).count() as u64,
         live: trace.iter().filter(|x| x.committed && !x.aborted).count() as u64,
         retraction_refused,
+        exposed: exposed_effects(&trace, reviewed, s.retract),
+        relabeled: relabeled_after_release(&trace, reviewed),
     }
 }
 
-/// Unguarded arm: a real second execution on the SAME schedule. Its effects
-/// leave at commit, so there is nothing to hold and no retraction to refuse.
-pub fn run_unguarded(seed: u64, depth: usize) -> Outcome {
+/// Which runtime a scenario runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arm {
+    /// `l2_exec::L2Runtime`: cascades, and releases under output commit
+    Verified,
+    /// `l2_unguarded::UnguardedStore`: releases at commit, does not cascade
+    Unguarded,
+    /// `l2_cascade::CascadeStore`: releases at commit AND cascades -- the
+    /// superseded design of rounds <= 22
+    Cascade,
+}
+
+impl Arm {
+    pub fn label(self) -> &'static str {
+        match self {
+            Arm::Verified => "verified",
+            Arm::Unguarded => "unguarded",
+            Arm::Cascade => "cascade",
+        }
+    }
+}
+
+/// The provenance trace of a release-at-commit store.
+pub fn provenance_of(st: &UnguardedStore) -> Vec<Prov> {
+    st.txns
+        .iter()
+        .enumerate()
+        .map(|(i, x)| Prov {
+            txn: i as u64,
+            committed: x.committed,
+            aborted: x.aborted,
+            externalized: x.externalized,
+            predecessors: x.predecessors.clone(),
+        })
+        .collect()
+}
+
+/// A baseline store that releases effects at commit. Both baselines run the
+/// SAME schedule through the SAME driver below, so a difference between their
+/// figures is a difference between the stores and nothing else.
+pub trait ReleasesAtCommit {
+    fn begin(&mut self) -> u64;
+    fn read(&mut self, t: u64, c: u64);
+    fn commit(&mut self, t: u64, writes: &[(u64, u64)]) -> bool;
+    /// the review retracts `t`
+    fn retract(&mut self, t: u64);
+    fn provenance(&self) -> Vec<Prov>;
+}
+
+impl ReleasesAtCommit for UnguardedStore {
+    fn begin(&mut self) -> u64 {
+        UnguardedStore::begin(self)
+    }
+    fn read(&mut self, t: u64, c: u64) {
+        UnguardedStore::read(self, t, c)
+    }
+    fn commit(&mut self, t: u64, writes: &[(u64, u64)]) -> bool {
+        UnguardedStore::commit(self, t, writes)
+    }
+    fn retract(&mut self, t: u64) {
+        UnguardedStore::abort(self, t)
+    }
+    fn provenance(&self) -> Vec<Prov> {
+        provenance_of(self)
+    }
+}
+
+impl ReleasesAtCommit for CascadeStore {
+    fn begin(&mut self) -> u64 {
+        CascadeStore::begin(self)
+    }
+    fn read(&mut self, t: u64, c: u64) {
+        CascadeStore::read(self, t, c)
+    }
+    fn commit(&mut self, t: u64, writes: &[(u64, u64)]) -> bool {
+        CascadeStore::commit(self, t, writes)
+    }
+    fn retract(&mut self, t: u64) {
+        CascadeStore::abort(self, t);
+    }
+    fn provenance(&self) -> Vec<Prov> {
+        provenance_of(&self.inner)
+    }
+}
+
+/// The release-at-commit schedule: the same scenario the guarded arm runs,
+/// with nothing to hold and no retraction to refuse, since effects leave at
+/// commit. `late_review` has no meaning here -- every review is late.
+fn run_release_at_commit<S: ReleasesAtCommit>(mut st: S, seed: u64, depth: usize) -> Outcome {
     let s = shape_of(seed, depth);
     let base = 1_000 + (seed % 11) * 100;
-    let mut st = UnguardedStore::new();
     let mut refused = 0u64;
 
     let root = st.begin();
@@ -362,38 +494,38 @@ pub fn run_unguarded(seed: u64, depth: usize) -> Outcome {
 
     let reviewed = committed[s.abort_at % committed.len()];
     if s.retract {
-        st.abort(reviewed);
+        st.retract(reviewed);
     }
 
-    let trace: Vec<Prov> = st
-        .txns
-        .iter()
-        .enumerate()
-        .map(|(i, x)| Prov {
-            txn: i as u64,
-            committed: x.committed,
-            aborted: x.aborted,
-            externalized: x.externalized,
-            predecessors: x.predecessors.clone(),
-        })
-        .collect();
-
+    let trace = st.provenance();
     Outcome {
         a3: detect_a3(&trace).is_some(),
         a3_unpropagated: detect_a3_unpropagated(&trace).is_some(),
-        cascaded: 0,
+        cascaded: trace.iter().filter(|x| x.aborted && x.txn != reviewed && x.committed).count() as u64,
         refused,
         held: 0,
         released: trace.iter().filter(|x| x.externalized).count() as u64,
         live: trace.iter().filter(|x| x.committed && !x.aborted).count() as u64,
         retraction_refused: false,
+        exposed: exposed_effects(&trace, reviewed, s.retract),
+        relabeled: relabeled_after_release(&trace, reviewed),
     }
+}
+
+/// Unguarded arm: releases at commit, does not cascade.
+pub fn run_unguarded(seed: u64, depth: usize) -> Outcome {
+    run_release_at_commit(UnguardedStore::new(), seed, depth)
+}
+
+/// Cascade arm: releases at commit AND cascades -- the superseded design.
+pub fn run_cascade(seed: u64, depth: usize) -> Outcome {
+    run_release_at_commit(CascadeStore::new(), seed, depth)
 }
 
 pub struct Summary {
     pub runs: u32,
     pub depth: usize,
-    pub guarded: bool,
+    pub arm: Arm,
     pub a3_hits: u32,
     pub a3_unpropagated_hits: u32,
     pub cascaded: u64,
@@ -403,16 +535,27 @@ pub struct Summary {
     pub live: u64,
     pub retractions: u32,
     pub retractions_refused: u32,
+    /// effects out although the review asked to withdraw their basis
+    pub exposed: u64,
+    /// scenarios with at least one such effect
+    pub exposed_scenarios: u32,
+    /// dependents flagged aborted after their effects were out
+    pub relabeled: u64,
 }
 
-pub fn run_experiment(runs: u32, depth: usize, guarded: bool) -> Summary {
+pub fn run_experiment(runs: u32, depth: usize, arm: Arm) -> Summary {
     let mut s = Summary {
-        runs, depth, guarded, a3_hits: 0, a3_unpropagated_hits: 0, cascaded: 0, refused: 0,
+        runs, depth, arm, a3_hits: 0, a3_unpropagated_hits: 0, cascaded: 0, refused: 0,
         held: 0, released: 0, live: 0, retractions: 0, retractions_refused: 0,
+        exposed: 0, exposed_scenarios: 0, relabeled: 0,
     };
     for i in 0..runs as u64 {
         let seed = i.wrapping_mul(2_654_435_761) ^ (i << 7);
-        let o = if guarded { run_guarded(seed, depth) } else { run_unguarded(seed, depth) };
+        let o = match arm {
+            Arm::Verified => run_guarded(seed, depth),
+            Arm::Unguarded => run_unguarded(seed, depth),
+            Arm::Cascade => run_cascade(seed, depth),
+        };
         if o.a3 {
             s.a3_hits += 1;
         }
@@ -430,6 +573,11 @@ pub fn run_experiment(runs: u32, depth: usize, guarded: bool) -> Summary {
         s.held += o.held;
         s.released += o.released;
         s.live += o.live;
+        s.exposed += o.exposed;
+        if o.exposed > 0 {
+            s.exposed_scenarios += 1;
+        }
+        s.relabeled += o.relabeled;
     }
     s
 }
@@ -441,7 +589,7 @@ mod tests {
     #[test]
     fn verified_runtime_prevents_a3_at_every_depth() {
         for depth in [2usize, 3, 5] {
-            let s = run_experiment(1000, depth, true);
+            let s = run_experiment(1000, depth, Arm::Verified);
             assert_eq!(s.a3_hits, 0, "verified L2 runtime admitted A3 at depth {depth}");
             assert_eq!(s.a3_unpropagated_hits, 0, "verified L2 runtime left a surviving dependent of an aborted operation at depth {depth}");
         }
@@ -450,7 +598,7 @@ mod tests {
     #[test]
     fn unguarded_baseline_exhibits_a3_but_not_vacuously() {
         for depth in [2usize, 3, 5] {
-            let s = run_experiment(1000, depth, false);
+            let s = run_experiment(1000, depth, Arm::Unguarded);
             assert!(
                 s.a3_hits > 0,
                 "unguarded baseline never exhibits A3 at depth {depth}; \
@@ -466,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_gate_actually_refuses_somewhere() {
-        let s = run_experiment(1000, 3, true);
+        let s = run_experiment(1000, 3, Arm::Verified);
         assert!(
             s.refused > 0,
             "commit refused nothing in 1000 scenarios; its refusal path is untested \
@@ -476,7 +624,7 @@ mod tests {
 
     #[test]
     fn output_commit_holds_dependents_of_a_reviewed_transaction() {
-        let s = run_experiment(1000, 3, true);
+        let s = run_experiment(1000, 3, Arm::Verified);
         assert!(
             s.held > 0,
             "no release was ever refused; output commit is untested and the A3 figure \
@@ -486,7 +634,7 @@ mod tests {
 
     #[test]
     fn a_late_review_cannot_retract_released_effects() {
-        let s = run_experiment(1000, 3, true);
+        let s = run_experiment(1000, 3, Arm::Verified);
         assert!(
             s.retractions_refused > 0,
             "no retraction was refused; the late-review path is untested"
@@ -497,7 +645,7 @@ mod tests {
     #[test]
     fn every_live_effect_is_released_after_the_review() {
         for depth in [2usize, 3, 5] {
-            let s = run_experiment(1000, depth, true);
+            let s = run_experiment(1000, depth, Arm::Verified);
             assert_eq!(
                 s.released, s.live,
                 "at depth {depth} output commit stranded a live transaction's effects"
@@ -522,6 +670,70 @@ mod tests {
         trace[1].externalized = false;
         trace.push(Prov { txn: 2, committed: true, aborted: false, externalized: true, predecessors: vec![1] });
         assert_eq!(detect_a3(&trace), Some((2, 0)), "the detector must follow the closure");
+    }
+
+    /// Round 33. The superseded design satisfies the overruled predicate in
+    /// every scenario and fails the current one exactly as often as the
+    /// unguarded baseline does: its cascade moves flags, not effects.
+    #[test]
+    fn the_superseded_design_passes_the_overruled_predicate_and_fails_the_current_one() {
+        for depth in [2usize, 3, 5] {
+            let c = run_experiment(1000, depth, Arm::Cascade);
+            let u = run_experiment(1000, depth, Arm::Unguarded);
+            assert_eq!(
+                c.a3_unpropagated_hits, 0,
+                "the cascade left a surviving dependent at depth {depth}; this arm no longer models the superseded design"
+            );
+            assert!(c.a3_hits > 0, "the cascade arm never releases on a retracted basis at depth {depth}; it cannot separate the predicates");
+            assert_eq!(
+                c.a3_hits, u.a3_hits,
+                "at depth {depth} the cascade changed how often an effect is out on a retracted basis; it may only change flags"
+            );
+            assert!(c.relabeled > 0, "no dependent was flagged after release at depth {depth}; R5's class is unexercised");
+            assert_eq!(u.relabeled, 0, "the unguarded baseline does not cascade, so it can relabel nothing");
+        }
+    }
+
+    /// Round 33. `exposed` reads no abort flag, so the two release-at-commit
+    /// arms must agree on it, and the verified runtime is NOT zero on it: it
+    /// is exposed in exactly the scenarios where it refused a retraction.
+    #[test]
+    fn exposure_reads_no_flag_and_the_verified_residue_is_the_refused_retractions() {
+        for depth in [2usize, 3, 5] {
+            let v = run_experiment(1000, depth, Arm::Verified);
+            let u = run_experiment(1000, depth, Arm::Unguarded);
+            let c = run_experiment(1000, depth, Arm::Cascade);
+            assert_eq!(c.exposed, u.exposed, "a cascade changed what reached the world at depth {depth}");
+            assert_eq!(c.exposed_scenarios, u.exposed_scenarios);
+            assert_eq!(
+                u.exposed_scenarios, u.retractions,
+                "release at commit exposes the reviewed operation in every retraction"
+            );
+            assert!(v.exposed > 0, "late reviews must leave residue at depth {depth}, or the refusal count is unexplained");
+            assert!(v.exposed < u.exposed, "output commit exposed no less than release at commit at depth {depth}");
+            assert_eq!(
+                v.exposed_scenarios, v.retractions_refused,
+                "at depth {depth} the verified runtime is exposed somewhere other than where it refused a retraction"
+            );
+            assert_eq!(v.relabeled, 0, "the verified runtime flagged an operation whose effects were out");
+        }
+    }
+
+    /// Round 33. A literal trace on which every dependent is flagged: the
+    /// overruled predicate is satisfied, and effects are out all the same.
+    #[test]
+    fn exposure_counts_effects_not_flags() {
+        let trace = vec![
+            Prov { txn: 0, committed: true, aborted: true, externalized: true, predecessors: vec![] },
+            Prov { txn: 1, committed: true, aborted: true, externalized: true, predecessors: vec![0] },
+            Prov { txn: 2, committed: true, aborted: true, externalized: false, predecessors: vec![1] },
+            Prov { txn: 3, committed: true, aborted: false, externalized: true, predecessors: vec![] },
+        ];
+        assert_eq!(exposed_effects(&trace, 0, true), 2, "the reviewed operation and its released dependent");
+        assert_eq!(exposed_effects(&trace, 0, false), 0, "an approved operation exposes nothing");
+        assert_eq!(relabeled_after_release(&trace, 0), 1);
+        assert!(detect_a3_unpropagated(&trace).is_none(), "every dependent is flagged: the overruled predicate is satisfied");
+        assert_eq!(detect_a3(&trace), Some((1, 0)), "and an effect is out on a retracted basis all the same");
     }
 
     /// The B4 regression test. A transaction reads a cell, another

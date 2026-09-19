@@ -21,9 +21,17 @@ pub mod l2_exec;
 // no proofs, no safety claim -- the behaviour L2 removes.
 pub mod l2_unguarded;
 
-// The synthetic measurement driver: the verified arm is l2_exec under output
-// commit, the unguarded arm is l2_unguarded (releases at commit), over
-// seed-varied schedules with a reviewed, retracted or approved transaction.
+// The SUPERSEDED L2 design as a second baseline (round 33): releases at commit
+// AND cascades, wrapping l2_unguarded so the two differ in exactly two places.
+// Ordinary Rust, no proofs, no safety claim. OVERRULED (rounds <= 22): this
+// was the L2 discipline.
+pub mod l2_cascade;
+
+// The synthetic measurement driver, three arms over the same seed-varied
+// schedules with a reviewed, retracted or approved transaction: l2_exec under
+// output commit, l2_unguarded (releases at commit), and l2_cascade (releases
+// at commit and cascades). Reports both A3 predicates and `exposed`, a count
+// that reads no abort flag.
 pub mod l2_measure;
 
 // Replay of recorded live sessions through the same verified runtime, so

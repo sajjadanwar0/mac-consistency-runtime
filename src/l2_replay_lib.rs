@@ -26,10 +26,17 @@
 //! aborts both before anything of either is out. A recorded session holds
 //! the verdict, not when effects were released; the release order is this
 //! policy, the same for every session.
+//!
+//! 2026-09-19 round 33: a third arm, the SUPERSEDED design
+//! (`l2_cascade::CascadeStore`: release at commit AND cascade). On a retracted
+//! session it flags the executor aborted after the executor's effect is out,
+//! so the overruled predicate reads clean while the current one fires. With
+//! two arms the replay could not show that the definitions differ.
 
+use crate::l2_cascade::CascadeStore;
 use crate::l2_exec::L2Runtime;
 use crate::l2_unguarded::UnguardedStore;
-use crate::l2_measure::{detect_a3, Prov};
+use crate::l2_measure::{detect_a3, detect_a3_unpropagated, provenance_of, Prov};
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -114,19 +121,30 @@ pub fn replay_unguarded(s: &Session) -> (bool, bool) {
     if s.retracted {
         st.abort(planner);
     }
-    let trace: Vec<Prov> = st
-        .txns
-        .iter()
-        .enumerate()
-        .map(|(i, x)| Prov {
-            txn: i as u64,
-            committed: x.committed,
-            aborted: x.aborted,
-            externalized: x.externalized,
-            predecessors: x.predecessors.clone(),
-        })
-        .collect();
+    let trace = provenance_of(&st);
     (detect_a3(&trace).is_some(), st.txns[executor as usize].externalized)
+}
+
+/// Replay through the SUPERSEDED design, which releases at commit and
+/// cascades. Returns (a3_fired, overruled_a3_fired, executor_released).
+pub fn replay_cascade(s: &Session) -> (bool, bool, bool) {
+    let mut st = CascadeStore::new();
+    let planner = st.begin();
+    if !st.commit(planner, &[(s.plan_cell, s.plan_value)]) {
+        return (false, false, false);
+    }
+    let executor = st.begin();
+    st.read(executor, s.plan_cell);
+    st.commit(executor, &[(s.result_cell, s.result_value)]);
+    if s.retracted {
+        st.abort(planner);
+    }
+    let trace = provenance_of(&st.inner);
+    (
+        detect_a3(&trace).is_some(),
+        detect_a3_unpropagated(&trace).is_some(),
+        st.inner.txns[executor as usize].externalized,
+    )
 }
 
 #[cfg(test)]
@@ -144,6 +162,15 @@ mod tests {
         assert!(!g_released, "output commit released the executor of a retracted plan");
         assert!(u_a3, "the unguarded baseline must exhibit A3, or the comparison is vacuous");
         assert!(u_released, "the baseline releases at commit");
+    }
+    #[test]
+    fn the_superseded_design_relabels_the_executor_after_its_effect_is_out() {
+        let (a3, overruled, released) = replay_cascade(&sess(true));
+        assert!(released, "this design releases at commit");
+        assert!(!overruled, "the cascade flags the executor, so the overruled predicate is satisfied");
+        assert!(a3, "and the executor's effect is out on a retracted plan all the same");
+        let (a3, overruled, released) = replay_cascade(&sess(false));
+        assert!(!a3 && !overruled && released, "a kept plan is clean under every predicate");
     }
     #[test]
     fn no_retraction_means_no_a3_anywhere_and_the_executor_releases() {
