@@ -1,10 +1,11 @@
 [package]
 name = "l2-live"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Live-agent driver for the verified L2 causal-tracking runtime (drives the real L2CausalStore under real LLM agents and measures A3 prevention)"
+description = "Live L2 deployment: real model agents on the verified runtime (src/l2_exec.rs) with output commit releasing the executor's effect, next to the unguarded baseline"
 
 [dependencies]
+agent-consistency-runtime = { path = ".." }
 ureq = { version = "2.9", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

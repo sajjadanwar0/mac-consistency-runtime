@@ -5,6 +5,22 @@ use vstd::prelude::*;
 use vstd::hash_map::HashMapWithView;
 
 verus! {
+
+// 2026-09-15  round 20  vstd migration of this file (Verus 0.2026.09.13.671956e).
+// Map::new(fk, fv) became Map::new(s: Set<K>, fv) and is uninterp; Set is
+// finite-only and its predicate constructor returns Option; Set::map and
+// Seq::to_set are closed. The shared L2 model takes the same Set-algebra
+// rewrite as lib_l2_safety.rs. The u64 -> int views are Set::map / Seq::to_set
+// images, and the bridge lemmas after writes_map give back the predicates the
+// old bodies unfolded to. The four groups below are the ones
+// lib_refinement_ssi_chain.rs imports; all four are also members of vstd's
+// group_vstd_default.
+broadcast use
+    vstd::map::group_map_lemmas,
+    vstd::set::group_set_lemmas,
+    vstd::set_lib::group_set_lib_default,
+    vstd::seq_lib::group_seq_lib_default;
+
 pub type CellId  = int;
 pub type TxnId   = int;
 pub type Value   = int;
@@ -22,6 +38,7 @@ pub struct TxnState {
     pub read_from:     Map<CellId, TxnId>,
     pub read_at:       Map<CellId, Time>,
     pub commit_time:   Time,
+    pub externalized:  bool,
 }
 
 pub open spec fn empty_txn() -> TxnState {
@@ -37,6 +54,7 @@ pub open spec fn empty_txn() -> TxnState {
         read_from:     Map::empty(),
         read_at:       Map::empty(),
         commit_time:   0,
+        externalized:  false,
     }
 }
 
@@ -179,7 +197,7 @@ pub open spec fn publish_writes(
     wv: Map<CellId, Value>,
 ) -> Map<CellId, Value> {
     Map::new(
-        |c: CellId| ws.contains(c) || cv.contains_key(c),
+        ws.union(cv.dom()),
         |c: CellId| if ws.contains(c) { wv[c] } else { cv[c] },
     )
 }
@@ -190,7 +208,7 @@ pub open spec fn publish_writer(
     t: TxnId,
 ) -> Map<CellId, TxnId> {
     Map::new(
-        |c: CellId| ws.contains(c) || cw.contains_key(c),
+        ws.union(cw.dom()),
         |c: CellId| if ws.contains(c) { t } else { cw[c] },
     )
 }
@@ -211,7 +229,7 @@ pub open spec fn cascade_abort(
     t: TxnId,
 ) -> Map<TxnId, TxnState> {
     Map::new(
-        |id: TxnId| txns.contains_key(id),
+        txns.dom(),
         |id: TxnId| {
             let txn = txns[id];
             if txn.predecessors.contains(t) {
@@ -233,7 +251,19 @@ pub open spec fn a1_witness_at_commit(s: RuntimeState, t: TxnId) -> bool {
         && s.cell_value[c] != s.txns[t].read_values[c]
 }
 
+// A3 (round 24): an externalized transaction with an aborted one in its closure.
 pub open spec fn a3_witness(s: RuntimeState, t: TxnId) -> bool {
+    s.txns.contains_key(t)
+    && s.txns[t].externalized
+    && exists |p: TxnId|
+        #![trigger s.txns[t].predecessors.contains(p)]
+        s.txns[t].predecessors.contains(p)
+        && s.txns.contains_key(p)
+        && s.txns[p].aborted
+}
+
+// The pre-round-24 A3: a committed, unaborted dependent of an aborted transaction.
+pub open spec fn a3_unpropagated_witness(s: RuntimeState, t: TxnId) -> bool {
     s.txns.contains_key(t)
     && s.txns[t].committed
     && !s.txns[t].aborted
@@ -329,7 +359,7 @@ pub proof fn lemma_commit_valid_implies_no_a3(s: RuntimeState, t: TxnId)
             ==> !s.txns[p].aborted,
 { }
 
-pub proof fn lemma_no_cascade_admits_a3(s: RuntimeState, t: TxnId, p: TxnId)
+pub proof fn lemma_no_cascade_admits_a3_unpropagated(s: RuntimeState, t: TxnId, p: TxnId)
     requires
         s.txns.contains_key(t),
         s.txns[t].committed,
@@ -337,7 +367,7 @@ pub proof fn lemma_no_cascade_admits_a3(s: RuntimeState, t: TxnId, p: TxnId)
         s.txns[t].predecessors.contains(p),
         s.txns.contains_key(p),
         s.txns[p].aborted,
-    ensures a3_witness(s, t),
+    ensures a3_unpropagated_witness(s, t),
 {
     assert(s.txns[t].predecessors.contains(p)
         && s.txns.contains_key(p)
@@ -506,10 +536,30 @@ pub proof fn lemma_begin_preserves_inv_l2(s: RuntimeState, t: TxnId)
         }
     }
 
+    // 2026-09-16 round 26: this copy's inv_read_provenance also states the
+    // read-values domain, and the block below used to restate the invariant
+    // without that conjunct, leaving it to unguided automation. The round-25
+    // attempt, which only added two spec functions to this module, failed four
+    // of these blocks (69 verified, 4 errors). The conjunct is now restated and
+    // proved explicitly.
+    assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+        (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+        implies s2.txns[tt].read_values.contains_key(cc)
+    by {
+        if tt == t {
+            assert(s2.txns[t].read_set =~= Set::<CellId>::empty());
+        } else {
+            assert(s2.txns[tt] == s.txns[tt]);
+            assert(s.txns[tt].read_set.contains(cc));
+            assert(s.txns[tt].read_values.contains_key(cc));
+        }
+    }
+
     assert(inv_read_provenance(s2)) by {
         assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
             (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc)) implies
                 s2.txns[tt].read_from.contains_key(cc)
+                && s2.txns[tt].read_values.contains_key(cc)
                 && s2.txns[tt].predecessors.contains(s2.txns[tt].read_from[cc])
                 && s2.txns.contains_key(s2.txns[tt].read_from[cc])
                 && s2.txns[s2.txns[tt].read_from[cc]].write_set.contains(cc)
@@ -556,10 +606,33 @@ pub proof fn lemma_write_preserves_inv_l2(s: RuntimeState, t: TxnId, c: CellId, 
         }
     }
 
+    // 2026-09-16 round 26: this copy's inv_read_provenance also states the
+    // read-values domain, and the block below used to restate the invariant
+    // without that conjunct, leaving it to unguided automation. The round-25
+    // attempt, which only added two spec functions to this module, failed four
+    // of these blocks (69 verified, 4 errors). The conjunct is now restated and
+    // proved explicitly.
+    assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+        (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+        implies s2.txns[tt].read_values.contains_key(cc)
+    by {
+        if tt == t {
+            assert(s2.txns[t].read_set == s.txns[t].read_set);
+            assert(s2.txns[t].read_values == s.txns[t].read_values);
+            assert(s.txns[t].read_set.contains(cc));
+            assert(s.txns[t].read_values.contains_key(cc));
+        } else {
+            assert(s2.txns[tt] == s.txns[tt]);
+            assert(s.txns[tt].read_set.contains(cc));
+            assert(s.txns[tt].read_values.contains_key(cc));
+        }
+    }
+
     assert(inv_read_provenance(s2)) by {
         assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
             (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc)) implies
                 s2.txns[tt].read_from.contains_key(cc)
+                && s2.txns[tt].read_values.contains_key(cc)
                 && s2.txns[tt].predecessors.contains(s2.txns[tt].read_from[cc])
                 && s2.txns.contains_key(s2.txns[tt].read_from[cc])
                 && s2.txns[s2.txns[tt].read_from[cc]].write_set.contains(cc)
@@ -668,10 +741,28 @@ pub proof fn lemma_abort_preserves_inv_l2(s: RuntimeState, t: TxnId)
         }
     }
 
+    // 2026-09-16 round 26: this copy's inv_read_provenance also states the
+    // read-values domain, and the block below used to restate the invariant
+    // without that conjunct, leaving it to unguided automation. The round-25
+    // attempt, which only added two spec functions to this module, failed four
+    // of these blocks (69 verified, 4 errors). The conjunct is now restated and
+    // proved explicitly.
+    assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+        (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+        implies s2.txns[tt].read_values.contains_key(cc)
+    by {
+        assert(s.txns.contains_key(tt));
+        assert(s2.txns[tt].read_set == s.txns[tt].read_set);
+        assert(s2.txns[tt].read_values == s.txns[tt].read_values);
+        assert(s.txns[tt].read_set.contains(cc));
+        assert(s.txns[tt].read_values.contains_key(cc));
+    }
+
     assert(inv_read_provenance(s2)) by {
         assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
             (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc)) implies
                 s2.txns[tt].read_from.contains_key(cc)
+                && s2.txns[tt].read_values.contains_key(cc)
                 && s2.txns[tt].predecessors.contains(s2.txns[tt].read_from[cc])
                 && s2.txns.contains_key(s2.txns[tt].read_from[cc])
                 && s2.txns[s2.txns[tt].read_from[cc]].write_set.contains(cc)
@@ -741,6 +832,30 @@ pub proof fn lemma_read_preserves_inv_l2(s: RuntimeState, t: TxnId, c: CellId)
         }
     }
 
+    // 2026-09-16 round 26: this copy's inv_read_provenance also states the
+    // read-values domain, and the block below used to restate the invariant
+    // without that conjunct, leaving it to unguided automation. The round-25
+    // attempt, which only added two spec functions to this module, failed four
+    // of these blocks (69 verified, 4 errors). The conjunct is now restated and
+    // proved explicitly.
+    assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+        (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+        implies s2.txns[tt].read_values.contains_key(cc)
+    by {
+        if tt == t {
+            assert(s2.txns[t].read_set == s.txns[t].read_set.insert(c));
+            assert(s2.txns[t].read_values == s.txns[t].read_values.insert(c, s.cell_value[c]));
+            if cc != c {
+                assert(s.txns[t].read_set.contains(cc));
+                assert(s.txns[t].read_values.contains_key(cc));
+            }
+        } else {
+            assert(s2.txns[tt] == s.txns[tt]);
+            assert(s.txns[tt].read_set.contains(cc));
+            assert(s.txns[tt].read_values.contains_key(cc));
+        }
+    }
+
     assert(inv_read_provenance(s2)) by {
         let writer = s.cell_writer[c];
         assert(s2.txns[t].predecessors =~=
@@ -748,6 +863,7 @@ pub proof fn lemma_read_preserves_inv_l2(s: RuntimeState, t: TxnId, c: CellId)
         assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
             (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc)) implies
                 s2.txns[tt].read_from.contains_key(cc)
+                && s2.txns[tt].read_values.contains_key(cc)
                 && s2.txns[tt].predecessors.contains(s2.txns[tt].read_from[cc])
                 && s2.txns.contains_key(s2.txns[tt].read_from[cc])
                 && s2.txns[s2.txns[tt].read_from[cc]].write_set.contains(cc)
@@ -907,10 +1023,33 @@ pub proof fn lemma_commit_preserves_inv_l2(s: RuntimeState, t: TxnId)
         }
     }
 
+    // 2026-09-16 round 26: this copy's inv_read_provenance also states the
+    // read-values domain, and the block below used to restate the invariant
+    // without that conjunct, leaving it to unguided automation. The round-25
+    // attempt, which only added two spec functions to this module, failed four
+    // of these blocks (69 verified, 4 errors). The conjunct is now restated and
+    // proved explicitly.
+    assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+        (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+        implies s2.txns[tt].read_values.contains_key(cc)
+    by {
+        if tt == t {
+            assert(s2.txns[t].read_set == s.txns[t].read_set);
+            assert(s2.txns[t].read_values == s.txns[t].read_values);
+            assert(s.txns[t].read_set.contains(cc));
+            assert(s.txns[t].read_values.contains_key(cc));
+        } else {
+            assert(s2.txns[tt] == s.txns[tt]);
+            assert(s.txns[tt].read_set.contains(cc));
+            assert(s.txns[tt].read_values.contains_key(cc));
+        }
+    }
+
     assert(inv_read_provenance(s2)) by {
         assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
             (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc)) implies
                 s2.txns[tt].read_from.contains_key(cc)
+                && s2.txns[tt].read_values.contains_key(cc)
                 && s2.txns[tt].predecessors.contains(s2.txns[tt].read_from[cc])
                 && s2.txns.contains_key(s2.txns[tt].read_from[cc])
                 && s2.txns[s2.txns[tt].read_from[cc]].write_set.contains(cc)
@@ -937,6 +1076,480 @@ pub proof fn lemma_commit_preserves_inv_l2(s: RuntimeState, t: TxnId)
     }
 }
 
+// ============================================================================
+// 2026-09-15  round 24  output commit (fix G1 at the Verus layer)
+// ============================================================================
+// A committed transaction's effects leave the runtime in a separate step,
+// step_externalize, enabled only once every transaction in its causal closure
+// has externalized; an externalized transaction is irrevocable (abort_valid).
+// A3 is an EXTERNALIZED transaction with an aborted transaction in its closure,
+// the predicate the TLA+ catalog states (Anomalies.tla, round 23).
+// OVERRULED (rounds <= 23): A3 was a committed, unaborted dependent of an
+// aborted transaction. The cascade falsifies that by flagging dependents
+// aborted, including dependents whose effects were already out, so it cannot
+// carry a prevention claim. It is kept as a3_unpropagated_witness.
+// The output-commit facts are a separate invariant, inv_output_commit, so the
+// inv_l2 lemmas and their proofs are unchanged.
+
+pub open spec fn externalize_valid(s: RuntimeState, t: TxnId) -> bool {
+    &&& s.txns.contains_key(t)
+    &&& s.txns[t].committed
+    &&& !s.txns[t].aborted
+    &&& !s.txns[t].externalized
+    &&& forall |p: TxnId| #![trigger s.txns[t].predecessors.contains(p)]
+            s.txns[t].predecessors.contains(p)
+            ==> s.txns.contains_key(p) && s.txns[p].externalized
+}
+
+pub open spec fn step_externalize(s: RuntimeState, t: TxnId) -> RuntimeState
+    recommends externalize_valid(s, t)
+{
+    RuntimeState {
+        now: s.now + 1,
+        txns: s.txns.insert(t, TxnState { externalized: true, ..s.txns[t] }),
+        ..s
+    }
+}
+
+pub open spec fn abort_valid(s: RuntimeState, t: TxnId) -> bool {
+    s.txns.contains_key(t) && !s.txns[t].externalized
+}
+
+// 2026-09-16  round 26: the guards of write and read as predicates, so the exec
+// runtime can state exactly when it refuses a call (G8).
+pub open spec fn write_valid(s: RuntimeState, t: TxnId) -> bool {
+    s.txns.contains_key(t) && !s.txns[t].committed
+}
+
+pub open spec fn read_valid(s: RuntimeState, t: TxnId, c: CellId) -> bool {
+    s.txns.contains_key(t) && !s.txns[t].committed && s.cell_value.contains_key(c)
+}
+
+pub open spec fn inv_externalized_final(s: RuntimeState) -> bool {
+    forall |x: TxnId| #![trigger s.txns[x].externalized]
+        s.txns.contains_key(x) && s.txns[x].externalized
+        ==> s.txns[x].committed && !s.txns[x].aborted
+}
+
+pub open spec fn inv_externalized_closed(s: RuntimeState) -> bool {
+    forall |x: TxnId, p: TxnId| #![trigger s.txns[x].predecessors.contains(p)]
+        s.txns.contains_key(x) && s.txns[x].externalized && s.txns[x].predecessors.contains(p)
+        ==> s.txns.contains_key(p) && s.txns[p].externalized
+}
+
+pub open spec fn inv_output_commit(s: RuntimeState) -> bool {
+    &&& inv_externalized_final(s)
+    &&& inv_externalized_closed(s)
+}
+
+pub proof fn lemma_initial_inv_output_commit()
+    ensures inv_output_commit(initial_state()),
+{
+    assert(initial_state().txns =~= Map::<TxnId, TxnState>::empty());
+}
+
+pub proof fn lemma_begin_preserves_inv_output_commit(s: RuntimeState, t: TxnId)
+    requires inv_output_commit(s), !s.txns.contains_key(t),
+    ensures inv_output_commit(step_begin(s, t)),
+{
+    let s2 = step_begin(s, t);
+    assert forall |x: TxnId| #![trigger s2.txns[x].externalized]
+        s2.txns.contains_key(x) && s2.txns[x].externalized
+        implies s2.txns[x].committed && !s2.txns[x].aborted
+    by {
+        if x == t {
+            assert(s2.txns[x] == (TxnState { started: true, ..empty_txn() }));
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert forall |x: TxnId, p: TxnId| #![trigger s2.txns[x].predecessors.contains(p)]
+        s2.txns.contains_key(x) && s2.txns[x].externalized && s2.txns[x].predecessors.contains(p)
+        implies s2.txns.contains_key(p) && s2.txns[p].externalized
+    by {
+        if x == t {
+            assert(s2.txns[x] == (TxnState { started: true, ..empty_txn() }));
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);
+            assert(p != t);
+            assert(s2.txns[p] == s.txns[p]);
+        }
+    }
+}
+
+// write, read and commit rewrite only transaction t, which has not committed,
+// so by inv_externalized_final it has not externalized either.
+pub proof fn lemma_write_preserves_inv_output_commit(s: RuntimeState, t: TxnId, c: CellId, v: Value)
+    requires inv_output_commit(s), s.txns.contains_key(t), !s.txns[t].committed,
+    ensures inv_output_commit(step_write(s, t, c, v)),
+{
+    let s2 = step_write(s, t, c, v);
+    assert(!s.txns[t].externalized);
+    assert forall |x: TxnId| #![trigger s2.txns[x].externalized]
+        s2.txns.contains_key(x) && s2.txns[x].externalized
+        implies s2.txns[x].committed && !s2.txns[x].aborted
+    by {
+        if x == t {
+            assert(s2.txns[x].externalized == s.txns[t].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert forall |x: TxnId, p: TxnId| #![trigger s2.txns[x].predecessors.contains(p)]
+        s2.txns.contains_key(x) && s2.txns[x].externalized && s2.txns[x].predecessors.contains(p)
+        implies s2.txns.contains_key(p) && s2.txns[p].externalized
+    by {
+        if x == t {
+            assert(s2.txns[x].externalized == s.txns[t].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);
+            if p == t {
+                assert(s2.txns[p].externalized == s.txns[t].externalized);
+            } else {
+                assert(s2.txns[p] == s.txns[p]);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_read_preserves_inv_output_commit(s: RuntimeState, t: TxnId, c: CellId)
+    requires
+        inv_output_commit(s),
+        s.txns.contains_key(t),
+        s.cell_value.contains_key(c),
+        !s.txns[t].committed,
+    ensures inv_output_commit(step_read(s, t, c)),
+{
+    let s2 = step_read(s, t, c);
+    assert(!s.txns[t].externalized);
+    assert forall |x: TxnId| #![trigger s2.txns[x].externalized]
+        s2.txns.contains_key(x) && s2.txns[x].externalized
+        implies s2.txns[x].committed && !s2.txns[x].aborted
+    by {
+        if x == t {
+            assert(s2.txns[x].externalized == s.txns[t].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert forall |x: TxnId, p: TxnId| #![trigger s2.txns[x].predecessors.contains(p)]
+        s2.txns.contains_key(x) && s2.txns[x].externalized && s2.txns[x].predecessors.contains(p)
+        implies s2.txns.contains_key(p) && s2.txns[p].externalized
+    by {
+        if x == t {
+            assert(s2.txns[x].externalized == s.txns[t].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);
+            if p == t {
+                assert(s2.txns[p].externalized == s.txns[t].externalized);
+            } else {
+                assert(s2.txns[p] == s.txns[p]);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_commit_preserves_inv_output_commit(s: RuntimeState, t: TxnId)
+    requires inv_output_commit(s), commit_valid(s, t),
+    ensures inv_output_commit(step_commit(s, t)),
+{
+    let s2 = step_commit(s, t);
+    assert(!s.txns[t].externalized);
+    assert forall |x: TxnId| #![trigger s2.txns[x].externalized]
+        s2.txns.contains_key(x) && s2.txns[x].externalized
+        implies s2.txns[x].committed && !s2.txns[x].aborted
+    by {
+        if x == t {
+            assert(s2.txns[x].externalized == s.txns[t].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert forall |x: TxnId, p: TxnId| #![trigger s2.txns[x].predecessors.contains(p)]
+        s2.txns.contains_key(x) && s2.txns[x].externalized && s2.txns[x].predecessors.contains(p)
+        implies s2.txns.contains_key(p) && s2.txns[p].externalized
+    by {
+        if x == t {
+            assert(s2.txns[x].externalized == s.txns[t].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);
+            if p == t {
+                assert(s2.txns[p].externalized == s.txns[t].externalized);
+            } else {
+                assert(s2.txns[p] == s.txns[p]);
+            }
+        }
+    }
+}
+
+// abort is valid only for a transaction that has not externalized. Every
+// transaction the cascade reaches has t in its closure, and an externalized one
+// would have t externalized too (inv_externalized_closed), so the cascade never
+// touches an externalized transaction.
+pub proof fn lemma_abort_preserves_inv_output_commit(s: RuntimeState, t: TxnId)
+    requires inv_output_commit(s), abort_valid(s, t),
+    ensures inv_output_commit(step_abort(s, t)),
+{
+    let s2 = step_abort(s, t);
+    let base = s.txns.insert(t, TxnState { aborted: true, ..s.txns[t] });
+    assert forall |x: TxnId| #![trigger s2.txns[x]]
+        s2.txns.contains_key(x) implies
+            s.txns.contains_key(x)
+            && s2.txns[x].externalized == s.txns[x].externalized
+            && s2.txns[x].committed == s.txns[x].committed
+            && s2.txns[x].predecessors == s.txns[x].predecessors
+            && (x != t && !s.txns[x].predecessors.contains(t)
+                ==> s2.txns[x].aborted == s.txns[x].aborted)
+    by {
+        assert(base.contains_key(x));
+        assert(base[x].externalized == s.txns[x].externalized);
+        assert(base[x].committed == s.txns[x].committed);
+        assert(base[x].predecessors == s.txns[x].predecessors);
+        assert(s2.txns[x].externalized == base[x].externalized);
+        assert(s2.txns[x].committed == base[x].committed);
+        assert(s2.txns[x].predecessors == base[x].predecessors);
+        if x != t && !s.txns[x].predecessors.contains(t) {
+            assert(base[x] == s.txns[x]);
+            assert(s2.txns[x] == base[x]);
+        }
+    }
+    assert forall |x: TxnId| #![trigger s2.txns[x].externalized]
+        s2.txns.contains_key(x) && s2.txns[x].externalized
+        implies s2.txns[x].committed && !s2.txns[x].aborted
+    by {
+        assert(s.txns.contains_key(x) && s.txns[x].externalized);
+        assert(s.txns[x].committed && !s.txns[x].aborted);
+        assert(x != t);
+        if s.txns[x].predecessors.contains(t) {
+            assert(s.txns[t].externalized);
+            assert(false);
+        }
+        assert(s2.txns[x].aborted == s.txns[x].aborted);
+    }
+    assert forall |x: TxnId, p: TxnId| #![trigger s2.txns[x].predecessors.contains(p)]
+        s2.txns.contains_key(x) && s2.txns[x].externalized && s2.txns[x].predecessors.contains(p)
+        implies s2.txns.contains_key(p) && s2.txns[p].externalized
+    by {
+        assert(s.txns.contains_key(x) && s.txns[x].externalized);
+        assert(s.txns[x].predecessors.contains(p));
+        assert(s.txns.contains_key(p) && s.txns[p].externalized);
+        assert(s2.txns.contains_key(p));
+        assert(s2.txns[p].externalized == s.txns[p].externalized);
+    }
+}
+
+pub proof fn lemma_externalize_preserves_inv_output_commit(s: RuntimeState, t: TxnId)
+    requires inv_output_commit(s), externalize_valid(s, t),
+    ensures inv_output_commit(step_externalize(s, t)),
+{
+    let s2 = step_externalize(s, t);
+    assert forall |x: TxnId| #![trigger s2.txns[x].externalized]
+        s2.txns.contains_key(x) && s2.txns[x].externalized
+        implies s2.txns[x].committed && !s2.txns[x].aborted
+    by {
+        if x == t {
+            assert(s2.txns[x].committed == s.txns[t].committed);
+            assert(s2.txns[x].aborted == s.txns[t].aborted);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert forall |x: TxnId, p: TxnId| #![trigger s2.txns[x].predecessors.contains(p)]
+        s2.txns.contains_key(x) && s2.txns[x].externalized && s2.txns[x].predecessors.contains(p)
+        implies s2.txns.contains_key(p) && s2.txns[p].externalized
+    by {
+        if x == t {
+            assert(s2.txns[x].predecessors == s.txns[t].predecessors);
+            assert(s.txns[t].predecessors.contains(p));
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);
+        } else {
+            assert(s2.txns[x] == s.txns[x]);
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);
+        }
+        if p == t {
+            assert(s2.txns[p].externalized);
+        } else {
+            assert(s2.txns[p] == s.txns[p]);
+        }
+    }
+}
+
+// externalize rewrites only t's externalized flag (and now), which inv_l2 never
+// reads. The frame below carries every field inv_l2 reads; the per-invariant
+// blocks after it are the ones lemma_abort_preserves_inv_l2 uses for the same
+// frame.
+pub proof fn lemma_externalize_preserves_inv_l2(s: RuntimeState, t: TxnId)
+    requires inv_l2(s), externalize_valid(s, t),
+    ensures inv_l2(step_externalize(s, t)),
+{
+    let s2 = step_externalize(s, t);
+    assert forall |x: TxnId| #![trigger s2.txns[x]]
+        s2.txns.contains_key(x) implies
+            s.txns.contains_key(x)
+            && s2.txns[x].predecessors == s.txns[x].predecessors
+            && s2.txns[x].committed == s.txns[x].committed
+            && s2.txns[x].aborted == s.txns[x].aborted
+            && s2.txns[x].write_set == s.txns[x].write_set
+            && s2.txns[x].write_values == s.txns[x].write_values
+            && s2.txns[x].read_set == s.txns[x].read_set
+            && s2.txns[x].read_values == s.txns[x].read_values
+            && s2.txns[x].read_from == s.txns[x].read_from
+    by {
+        if x != t {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert(invariant_committed_predecessors_clean(s2)) by {
+        assert forall |u: TxnId| #![trigger s2.txns[u].committed]
+            s2.txns.contains_key(u) && s2.txns[u].committed && !s2.txns[u].aborted
+            implies predecessors_clean(s2, u)
+        by {
+            assert(s.txns.contains_key(u) && s.txns[u].committed && !s.txns[u].aborted);
+            assert(predecessors_clean(s, u));
+            assert forall |p: TxnId| #![trigger s2.txns[u].predecessors.contains(p)]
+                s2.txns[u].predecessors.contains(p)
+                implies s2.txns.contains_key(p) && s2.txns[p].committed && !s2.txns[p].aborted
+            by {
+                assert(s.txns[u].predecessors.contains(p));
+                assert(s.txns.contains_key(p) && s.txns[p].committed && !s.txns[p].aborted);
+                assert(s2.txns.contains_key(p));
+            }
+        }
+    }
+    assert(inv_writers_committed(s2)) by {
+        assert forall |c: CellId| #![trigger s2.cell_writer[c]]
+            s2.cell_value.contains_key(c)
+            implies s2.txns.contains_key(s2.cell_writer[c]) && s2.txns[s2.cell_writer[c]].committed
+        by {
+            let w = s.cell_writer[c];
+            assert(s.cell_value.contains_key(c));
+            assert(s.txns.contains_key(w) && s.txns[w].committed);
+            assert(s2.txns.contains_key(w));
+        }
+    }
+    assert(s2.cell_value =~= s.cell_value);
+    assert(s2.cell_writer =~= s.cell_writer);
+    assert(pred_closed(s2)) by {
+        assert forall |u: TxnId, p: TxnId, q: TxnId|
+            #![trigger s2.txns[u].predecessors.contains(p), s2.txns[p].predecessors.contains(q)]
+            s2.txns.contains_key(u) && s2.txns[u].predecessors.contains(p)
+            && s2.txns[p].predecessors.contains(q)
+            implies s2.txns[u].predecessors.contains(q)
+        by {
+            assert(s2.txns[u].predecessors == s.txns[u].predecessors);
+            assert(s2.txns[p].predecessors == s.txns[p].predecessors);
+        }
+    }
+
+    assert(inv_committed_frozen(s2)) by {
+        assert forall |u: TxnId, p: TxnId| #![trigger s2.txns[u].predecessors.contains(p)]
+            s2.txns.contains_key(u) && s2.txns[u].predecessors.contains(p)
+            implies s2.txns.contains_key(p) && s2.txns[p].committed
+        by {
+            assert(s2.txns[u].predecessors == s.txns[u].predecessors);
+            assert(s2.txns[p].committed == s.txns[p].committed);
+        }
+    }
+
+    assert(inv_cell_writer_wrote(s2)) by {
+        assert forall |c: CellId| #![trigger s2.cell_writer[c]]
+            s2.cell_value.contains_key(c) implies
+                s2.txns.contains_key(s2.cell_writer[c])
+                && s2.txns[s2.cell_writer[c]].write_set.contains(c)
+                && s2.txns[s2.cell_writer[c]].write_values[c] == s2.cell_value[c]
+        by {
+            assert(s2.cell_value[c] == s.cell_value[c]);
+            assert(s2.cell_writer[c] == s.cell_writer[c]);
+            let w = s.cell_writer[c];
+            assert(s.cell_value.contains_key(c));
+            assert(s.txns.contains_key(w));
+            assert(s.txns[w].write_set.contains(c));
+            assert(s.txns[w].write_values[c] == s.cell_value[c]);
+            assert(s2.txns.contains_key(w));
+            assert(s2.txns[w].write_set == s.txns[w].write_set);
+            assert(s2.txns[w].write_values == s.txns[w].write_values);
+        }
+    }
+
+    // 2026-09-16 round 26: this copy's inv_read_provenance also states the
+    // read-values domain, and the block below used to restate the invariant
+    // without that conjunct, leaving it to unguided automation. The round-25
+    // attempt, which only added two spec functions to this module, failed four
+    // of these blocks (69 verified, 4 errors). The conjunct is now restated and
+    // proved explicitly.
+    assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+        (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+        implies s2.txns[tt].read_values.contains_key(cc)
+    by {
+        assert(s.txns.contains_key(tt));
+        assert(s2.txns[tt].read_set == s.txns[tt].read_set);
+        assert(s2.txns[tt].read_values == s.txns[tt].read_values);
+        assert(s.txns[tt].read_set.contains(cc));
+        assert(s.txns[tt].read_values.contains_key(cc));
+    }
+
+    assert(inv_read_provenance(s2)) by {
+        assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+            (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc)) implies
+                s2.txns[tt].read_from.contains_key(cc)
+                && s2.txns[tt].read_values.contains_key(cc)
+                && s2.txns[tt].predecessors.contains(s2.txns[tt].read_from[cc])
+                && s2.txns.contains_key(s2.txns[tt].read_from[cc])
+                && s2.txns[s2.txns[tt].read_from[cc]].write_set.contains(cc)
+                && s2.txns[s2.txns[tt].read_from[cc]].write_values[cc] == s2.txns[tt].read_values[cc]
+        by {
+            assert(s2.txns[tt].read_set == s.txns[tt].read_set);
+            assert(s2.txns[tt].read_values == s.txns[tt].read_values);
+            assert(s2.txns[tt].read_from == s.txns[tt].read_from);
+            assert(s2.txns[tt].predecessors == s.txns[tt].predecessors);
+            let w = s.txns[tt].read_from[cc];
+            assert(s.txns[tt].read_set.contains(cc));
+            assert(s.txns[tt].predecessors.contains(w));
+            assert(s.txns.contains_key(w));
+            assert(s.txns[w].write_set.contains(cc));
+            assert(s.txns[w].write_values[cc] == s.txns[tt].read_values[cc]);
+            assert(s2.txns.contains_key(w));
+            assert(s2.txns[w].write_set == s.txns[w].write_set);
+            assert(s2.txns[w].write_values == s.txns[w].write_values);
+        }
+    }
+}
+
+pub proof fn lemma_externalized_dependent_of_aborted_is_a3(s: RuntimeState, t: TxnId, p: TxnId)
+    requires
+        s.txns.contains_key(t),
+        s.txns[t].externalized,
+        s.txns[t].predecessors.contains(p),
+        s.txns.contains_key(p),
+        s.txns[p].aborted,
+    ensures a3_witness(s, t),
+{
+    assert(s.txns[t].predecessors.contains(p)
+        && s.txns.contains_key(p)
+        && s.txns[p].aborted);
+}
+
+pub proof fn lemma_l2_reachable_no_a3(s: RuntimeState)
+    requires inv_output_commit(s),
+    ensures forall |t: TxnId| #![trigger a3_witness(s, t)] !a3_witness(s, t),
+{
+    assert forall |t: TxnId| #![trigger a3_witness(s, t)] !a3_witness(s, t) by {
+        if a3_witness(s, t) {
+            let p = choose |p: TxnId|
+                s.txns[t].predecessors.contains(p)
+                && s.txns.contains_key(p) && s.txns[p].aborted;
+            assert(s.txns[t].predecessors.contains(p));
+            assert(s.txns.contains_key(p) && s.txns[p].externalized);   // inv_externalized_closed
+            assert(!s.txns[p].aborted);                                  // inv_externalized_final
+            assert(false);
+        }
+    }
+}
+
 pub proof fn lemma_initial_inv_l2()
     ensures inv_l2(initial_state())
 {
@@ -945,14 +1558,14 @@ pub proof fn lemma_initial_inv_l2()
     assert(initial_state().cell_writer =~= Map::<CellId, TxnId>::empty());
 }
 
-pub proof fn lemma_l2_reachable_no_a3(s: RuntimeState)
+pub proof fn lemma_l2_reachable_no_a3_unpropagated(s: RuntimeState)
     requires inv_l2(s),
-    ensures forall |t: TxnId| #![trigger s.txns[t].committed] !a3_witness(s, t),
+    ensures forall |t: TxnId| #![trigger s.txns[t].committed] !a3_unpropagated_witness(s, t),
 {
     assert forall |t: TxnId| #![trigger s.txns[t].committed]
-        !a3_witness(s, t)
+        !a3_unpropagated_witness(s, t)
     by {
-        if a3_witness(s, t) {
+        if a3_unpropagated_witness(s, t) {
             let p = choose |p: TxnId|
                 s.txns[t].predecessors.contains(p)
                 && s.txns.contains_key(p) && s.txns[p].aborted;
@@ -1271,6 +1884,50 @@ pub proof fn lemma_commit_preserves_inv_l2t(s: RuntimeState, t: TxnId)
     }
 }
 
+// 2026-09-15  round 24: externalize keeps inv_l2t (commit times and read
+// times are untouched, and now only grows).
+pub proof fn lemma_externalize_preserves_inv_l2t(s: RuntimeState, t: TxnId)
+    requires inv_l2t(s), externalize_valid(s, t),
+    ensures inv_l2t(step_externalize(s, t)),
+{
+    lemma_externalize_preserves_inv_l2(s, t);
+    let s2 = step_externalize(s, t);
+    assert forall |x: TxnId| #![trigger s2.txns[x]]
+        s2.txns.contains_key(x) implies
+            s.txns.contains_key(x)
+            && s2.txns[x].committed == s.txns[x].committed
+            && s2.txns[x].commit_time == s.txns[x].commit_time
+            && s2.txns[x].read_set == s.txns[x].read_set
+            && s2.txns[x].read_from == s.txns[x].read_from
+            && s2.txns[x].read_at == s.txns[x].read_at
+    by {
+        if x != t {
+            assert(s2.txns[x] == s.txns[x]);
+        }
+    }
+    assert(inv_commit_time_le_now(s2)) by {
+        assert forall |u: TxnId| #![trigger s2.txns[u].commit_time]
+            (s2.txns.contains_key(u) && s2.txns[u].committed)
+            implies s2.txns[u].commit_time <= s2.now
+        by {
+            assert(s.txns.contains_key(u) && s.txns[u].committed);
+            assert(s.txns[u].commit_time <= s.now);
+        }
+    }
+    assert(inv_read_temporal(s2)) by {
+        assert forall |tt: TxnId, cc: CellId| #![trigger s2.txns[tt].read_set.contains(cc)]
+            (s2.txns.contains_key(tt) && s2.txns[tt].read_set.contains(cc))
+            implies s2.txns.contains_key(s2.txns[tt].read_from[cc])
+                && s2.txns[s2.txns[tt].read_from[cc]].commit_time <= s2.txns[tt].read_at[cc]
+        by {
+            let w = s.txns[tt].read_from[cc];
+            assert(s.txns.contains_key(tt) && s.txns[tt].read_set.contains(cc));
+            assert(s.txns.contains_key(w) && s.txns[w].commit_time <= s.txns[tt].read_at[cc]);
+            assert(s2.txns.contains_key(w));
+        }
+    }
+}
+
 pub proof fn lemma_initial_inv_l2t()
     ensures inv_l2t(initial_state())
 {
@@ -1329,22 +1986,23 @@ pub proof fn lemma_int_roundtrip(c: int)
 {}
 
 pub open spec fn view_u64_set(s: Set<u64>) -> Set<int> {
-    Set::new(|c: int| in_u64(c) && s.contains(c as u64))
+    s.map(|k: u64| k as int)
 }
 pub open spec fn view_u64_map(m: Map<u64, u64>) -> Map<int, int> {
     Map::new(
-        |c: int| in_u64(c) && m.contains_key(c as u64),
+        m.dom().map(|k: u64| k as int),
         |c: int| m[c as u64] as int,
     )
 }
 
 pub open spec fn view_vec_u64_set(s: Seq<u64>) -> Set<int> {
-    Set::new(|x: int| exists |i: int| 0 <= i < s.len() && s[i] as int == x)
+    s.map_values(|k: u64| k as int).to_set()
 }
 
 pub proof fn lemma_vec_set_empty()
     ensures view_vec_u64_set(Seq::<u64>::empty()) =~= Set::<int>::empty(),
 {
+    broadcast use group_l2_view_bridge;
     assert forall |x: int| !view_vec_u64_set(Seq::<u64>::empty()).contains(x) by {
         assert(Seq::<u64>::empty().len() == 0);
     }
@@ -1353,11 +2011,18 @@ pub proof fn lemma_vec_set_empty()
 pub proof fn lemma_vec_set_push(s: Seq<u64>, x: u64)
     ensures view_vec_u64_set(s.push(x)) =~= view_vec_u64_set(s).insert(x as int),
 {
+    broadcast use group_l2_view_bridge;
     let sp = s.push(x);
     lemma_u64_roundtrip(x);
     assert forall |y: int|
         view_vec_u64_set(sp).contains(y) <==> view_vec_u64_set(s).insert(x as int).contains(y)
     by {
+        lemma_view_vec_u64_set_contains(sp, y);
+        lemma_view_vec_u64_set_contains(s, y);
+        vstd::set::lemma_set_insert_same(view_vec_u64_set(s), x as int);
+        if y != x as int {
+            vstd::set::lemma_set_insert_different(view_vec_u64_set(s), y, x as int);
+        }
         if view_vec_u64_set(sp).contains(y) {
             let i = choose |i: int| 0 <= i < sp.len() && sp[i] as int == y;
             if i < s.len() {
@@ -1383,7 +2048,9 @@ pub proof fn lemma_vec_set_contains_iff(s: Seq<u64>, x: u64)
     ensures view_vec_u64_set(s).contains(x as int)
             <==> (exists |i: int| 0 <= i < s.len() && s[i] == x),
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(x);
+    lemma_view_vec_u64_set_contains(s, x as int);
     if view_vec_u64_set(s).contains(x as int) {
         let i = choose |i: int| 0 <= i < s.len() && s[i] as int == (x as int);
         assert(s[i] == x);
@@ -1410,6 +2077,7 @@ pub struct ExecTxn {
     pub read_from:    HashMapWithView<u64, u64>,
     pub read_at:      HashMapWithView<u64, u64>,
     pub commit_time:  u64,
+    pub externalized: bool,
 }
 
 impl ExecTxn {
@@ -1426,6 +2094,7 @@ impl ExecTxn {
             read_from:    view_u64_map(self.read_from@),
             read_at:      view_u64_map(self.read_at@),
             commit_time:  self.commit_time as int,
+            externalized: self.externalized,
         }
     }
 
@@ -1442,6 +2111,7 @@ impl ExecTxn {
             read_from:    HashMapWithView::new(),
             read_at:      HashMapWithView::new(),
             commit_time:  0,
+            externalized: false,
         };
         proof {
             lemma_vec_set_empty();
@@ -1460,12 +2130,12 @@ impl ExecTxn {
 
 pub open spec fn view_txns_map(m: Map<u64, ExecTxn>) -> Map<int, TxnState> {
     Map::new(
-        |t: int| in_u64(t) && m.contains_key(t as u64),
+        m.dom().map(|k: u64| k as int),
         |t: int| m[t as u64].view(),
     )
 }
 pub open spec fn view_alltxns(m: Map<u64, ExecTxn>) -> Set<int> {
-    Set::new(|t: int| in_u64(t) && m.contains_key(t as u64))
+    m.dom().map(|k: u64| k as int)
 }
 
 /// Bridge from a u64-keyed hash-map lookup to the abstract txn map.
@@ -1478,7 +2148,9 @@ pub proof fn lemma_txns_get_view(m: Map<u64, ExecTxn>, k: u64)
         view_txns_map(m).contains_key(k as int) <==> m.contains_key(k),
         m.contains_key(k) ==> view_txns_map(m)[k as int] == m[k].view(),
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(k);
+    lemma_view_txns_map_dom(m, k as int);
 }
 
 /// The same bridge for a u64-keyed value map.
@@ -1487,7 +2159,9 @@ pub proof fn lemma_cells_get_view(m: Map<u64, u64>, c: u64)
         view_u64_map(m).contains_key(c as int) <==> m.contains_key(c),
         m.contains_key(c) ==> view_u64_map(m)[c as int] == m[c] as int,
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(c);
+    lemma_view_u64_map_dom(m, c as int);
 }
 
 pub proof fn lemma_view_txns_insert(m: Map<u64, ExecTxn>, k: u64, v: ExecTxn)
@@ -1495,20 +2169,68 @@ pub proof fn lemma_view_txns_insert(m: Map<u64, ExecTxn>, k: u64, v: ExecTxn)
         view_txns_map(m.insert(k, v)) =~= view_txns_map(m).insert(k as int, v.view()),
         view_alltxns(m.insert(k, v)) =~= view_alltxns(m).insert(k as int),
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(k);
     assert forall |t: int| #[trigger] in_u64(t) implies (t as u64) as int == t by {
         lemma_int_roundtrip(t);
     }
-    assert(view_txns_map(m.insert(k, v)) =~= view_txns_map(m).insert(k as int, v.view()));
+    vstd::map::lemma_map_insert_domain(m, k, v);
+    vstd::map::lemma_map_insert_domain(view_txns_map(m), k as int, v.view());
+    lemma_view_set_insert(m.dom(), k);
+    assert(view_alltxns(m.insert(k, v)) =~= view_u64_set(m.dom().insert(k)));
+    assert(view_alltxns(m) =~= view_u64_set(m.dom()));
     assert(view_alltxns(m.insert(k, v)) =~= view_alltxns(m).insert(k as int));
+    assert(view_txns_map(m.insert(k, v)).dom() =~= view_u64_set(m.dom().insert(k)));
+    assert(view_txns_map(m).dom() =~= view_u64_set(m.dom()));
+    assert(view_txns_map(m.insert(k, v)).dom()
+        =~= view_txns_map(m).insert(k as int, v.view()).dom());
+    assert forall |t: int|
+        #[trigger] view_txns_map(m.insert(k, v)).dom().contains(t)
+        implies view_txns_map(m.insert(k, v))[t] == view_txns_map(m).insert(k as int, v.view())[t]
+    by {
+        lemma_view_txns_map_dom(m.insert(k, v), t);
+        lemma_view_txns_map_dom(m, t);
+        if in_u64(t) {
+            lemma_int_roundtrip(t);
+        }
+        vstd::map::lemma_map_insert_same(m, k, v);
+        vstd::map::lemma_map_insert_same(view_txns_map(m), k as int, v.view());
+        if (t as u64) != k {
+            vstd::set::lemma_set_insert_different(m.dom(), t as u64, k);
+            vstd::map::axiom_map_insert_different(m, t as u64, k, v);
+        }
+        if t != k as int {
+            vstd::map::axiom_map_insert_different(view_txns_map(m), t, k as int, v.view());
+        }
+    }
+    assert(view_txns_map(m.insert(k, v)) =~= view_txns_map(m).insert(k as int, v.view()));
 }
 
 pub proof fn lemma_view_set_insert(s: Set<u64>, c: u64)
     ensures view_u64_set(s.insert(c)) =~= view_u64_set(s).insert(c as int),
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(c);
     assert forall |x: int| #[trigger] in_u64(x) implies (x as u64) as int == x by {
         lemma_int_roundtrip(x);
+    }
+    assert forall |x: int|
+        #[trigger] view_u64_set(s.insert(c)).contains(x)
+        <==> view_u64_set(s).insert(c as int).contains(x)
+    by {
+        lemma_view_u64_set_contains(s.insert(c), x);
+        lemma_view_u64_set_contains(s, x);
+        vstd::set::lemma_set_insert_same(s, c);
+        vstd::set::lemma_set_insert_same(view_u64_set(s), c as int);
+        if in_u64(x) {
+            lemma_int_roundtrip(x);
+        }
+        if x != c as int {
+            vstd::set::lemma_set_insert_different(view_u64_set(s), x, c as int);
+        }
+        if (x as u64) != c {
+            vstd::set::lemma_set_insert_different(s, x as u64, c);
+        }
     }
     assert(view_u64_set(s.insert(c)) =~= view_u64_set(s).insert(c as int));
 }
@@ -1516,9 +2238,36 @@ pub proof fn lemma_view_set_insert(s: Set<u64>, c: u64)
 pub proof fn lemma_view_map_insert(m: Map<u64, u64>, c: u64, v: u64)
     ensures view_u64_map(m.insert(c, v)) =~= view_u64_map(m).insert(c as int, v as int),
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(c);
     assert forall |x: int| #[trigger] in_u64(x) implies (x as u64) as int == x by {
         lemma_int_roundtrip(x);
+    }
+    vstd::map::lemma_map_insert_domain(m, c, v);
+    vstd::map::lemma_map_insert_domain(view_u64_map(m), c as int, v as int);
+    lemma_view_set_insert(m.dom(), c);
+    assert(view_u64_map(m.insert(c, v)).dom() =~= view_u64_set(m.dom().insert(c)));
+    assert(view_u64_map(m).dom() =~= view_u64_set(m.dom()));
+    assert(view_u64_map(m.insert(c, v)).dom()
+        =~= view_u64_map(m).insert(c as int, v as int).dom());
+    assert forall |x: int|
+        #[trigger] view_u64_map(m.insert(c, v)).dom().contains(x)
+        implies view_u64_map(m.insert(c, v))[x] == view_u64_map(m).insert(c as int, v as int)[x]
+    by {
+        lemma_view_u64_map_dom(m.insert(c, v), x);
+        lemma_view_u64_map_dom(m, x);
+        if in_u64(x) {
+            lemma_int_roundtrip(x);
+        }
+        vstd::map::lemma_map_insert_same(m, c, v);
+        vstd::map::lemma_map_insert_same(view_u64_map(m), c as int, v as int);
+        if (x as u64) != c {
+            vstd::set::lemma_set_insert_different(m.dom(), x as u64, c);
+            vstd::map::axiom_map_insert_different(m, x as u64, c, v);
+        }
+        if x != c as int {
+            vstd::map::axiom_map_insert_different(view_u64_map(m), x, c as int, v as int);
+        }
     }
     assert(view_u64_map(m.insert(c, v)) =~= view_u64_map(m).insert(c as int, v as int));
 }
@@ -1532,14 +2281,133 @@ pub open spec fn last_val(s: Seq<(u64, u64)>, c: u64) -> u64
 }
 
 pub open spec fn writes_set(s: Seq<(u64, u64)>) -> Set<int> {
-    Set::new(|c: int| in_u64(c) && exists |i: int| 0 <= i < s.len() && #[trigger] s[i].0 == c as u64)
+    s.map_values(|p: (u64, u64)| p.0 as int).to_set()
 }
 
 pub open spec fn writes_map(s: Seq<(u64, u64)>) -> Map<int, int> {
     Map::new(
-        |c: int| in_u64(c) && exists |i: int| 0 <= i < s.len() && #[trigger] s[i].0 == c as u64,
+        s.map_values(|p: (u64, u64)| p.0 as int).to_set(),
         |c: int| last_val(s, c as u64) as int,
     )
+}
+
+// 2026-09-15  round 20  view bridge.
+// Set::map and Seq::to_set are closed, so membership in a view is opaque unless
+// a lemma is triggered on the exact term. Each lemma below concludes, verbatim,
+// the predicate the old view body unfolded to, so every proof written against
+// that unfolding keeps its meaning. Same doctrine as group_chain_bridge in
+// lib_refinement_ssi_chain.rs.
+//
+// OVERRULED (rounds 16-17): the first bridge concluded
+//     exists |k: u64| s.contains(k) && c == k as int         for view_u64_set
+//     s.map_values(|k: u64| k as int).contains(c)             for view_vec_u64_set
+// instead of the old predicates. Both are sound; proving membership through
+// them needs a witness term (c as u64, or an index into the mapped sequence)
+// that the goal never mentions. All eight round-16 failures are goals of that
+// kind: the six extensionality lemmas and the two can_commit assertions.
+// Round 17 rewrote the six proof bodies instead of these statements.
+//
+// The group is opened per function, never at module level: a module-level
+// `broadcast use` of it would put each lemma in scope of its own proof, which
+// the verifier rejects ("cannot recursively use a broadcast proof fn").
+// can_commit does not open it: its two witnesses are explicit calls, so the
+// rest of that function keeps the environment round 16 measured as verified.
+// OVERRULED (round 18, stopped at its version check, wrote nothing): opening
+// the group inside can_commit.
+//
+// A quantifier or choose whose only candidate trigger passes a closure
+// (s.map_values(|k: u64| k as int)[j]) has no trigger: Verus treats a closure
+// argument as impure (vir/src/triggers_auto.rs), and an explicit #[trigger]
+// cannot contain a lambda (vir/src/triggers.rs). The witness index into the
+// mapped sequence therefore comes from vstd's Seq::index_of, whose choose is
+// triggered inside vstd.
+// OVERRULED (round 19, rejected by trigger inference at the first such choose):
+//     let j = choose |j: int| 0 <= j < s.map_values(..).len() && s.map_values(..)[j] == x;
+pub broadcast proof fn lemma_view_u64_set_contains(s: Set<u64>, c: int)
+    ensures
+        #[trigger] view_u64_set(s).contains(c) <==> (in_u64(c) && s.contains(c as u64)),
+{
+    s.lemma_map_contains(|k: u64| k as int, c);
+    if view_u64_set(s).contains(c) {
+        let k = choose |k: u64| #[trigger] s.contains(k) && c == k as int;
+        lemma_u64_roundtrip(k);
+        assert(in_u64(c) && s.contains(c as u64));
+    }
+    if in_u64(c) && s.contains(c as u64) {
+        lemma_int_roundtrip(c);
+        assert(s.contains(c as u64) && c == (c as u64) as int);
+    }
+}
+
+pub broadcast proof fn lemma_view_vec_u64_set_contains(s: Seq<u64>, x: int)
+    ensures
+        #[trigger] view_vec_u64_set(s).contains(x)
+        <==> (exists |i: int| 0 <= i < s.len() && s[i] as int == x),
+{
+    s.map_values(|k: u64| k as int).to_set_ensures();
+    if view_vec_u64_set(s).contains(x) {
+        assert(s.map_values(|k: u64| k as int).contains(x));
+        let j = s.map_values(|k: u64| k as int).index_of(x);
+        assert(0 <= j < s.map_values(|k: u64| k as int).len()
+            && s.map_values(|k: u64| k as int)[j] == x);
+        assert(0 <= j < s.len() && s[j] as int == x);
+    }
+    if exists |i: int| 0 <= i < s.len() && s[i] as int == x {
+        let i = choose |i: int| 0 <= i < s.len() && s[i] as int == x;
+        assert(s.map_values(|k: u64| k as int)[i] == x);
+        assert(s.map_values(|k: u64| k as int).contains(x));
+    }
+}
+
+pub broadcast proof fn lemma_writes_set_contains(s: Seq<(u64, u64)>, c: int)
+    ensures
+        #[trigger] writes_set(s).contains(c)
+        <==> (in_u64(c) && exists |i: int| 0 <= i < s.len() && #[trigger] s[i].0 == c as u64),
+{
+    s.map_values(|p: (u64, u64)| p.0 as int).to_set_ensures();
+    if writes_set(s).contains(c) {
+        assert(s.map_values(|p: (u64, u64)| p.0 as int).contains(c));
+        let j = s.map_values(|p: (u64, u64)| p.0 as int).index_of(c);
+        assert(0 <= j < s.map_values(|p: (u64, u64)| p.0 as int).len()
+            && s.map_values(|p: (u64, u64)| p.0 as int)[j] == c);
+        assert(s.map_values(|p: (u64, u64)| p.0 as int)[j] == s[j].0 as int);
+        lemma_u64_roundtrip(s[j].0);
+        assert(0 <= j < s.len() && s[j].0 == c as u64);
+    }
+    if in_u64(c) && exists |i: int| 0 <= i < s.len() && #[trigger] s[i].0 == c as u64 {
+        let i = choose |i: int| 0 <= i < s.len() && #[trigger] s[i].0 == c as u64;
+        lemma_int_roundtrip(c);
+        assert(s.map_values(|p: (u64, u64)| p.0 as int)[i] == c);
+        assert(s.map_values(|p: (u64, u64)| p.0 as int).contains(c));
+    }
+}
+
+pub broadcast proof fn lemma_view_u64_map_dom(m: Map<u64, u64>, c: int)
+    ensures
+        #[trigger] view_u64_map(m).dom().contains(c) <==> (in_u64(c) && m.contains_key(c as u64)),
+{
+    broadcast use vstd::map::group_map_lemmas;
+    assert(view_u64_map(m).dom() =~= m.dom().map(|k: u64| k as int));
+    assert(view_u64_set(m.dom()) =~= m.dom().map(|k: u64| k as int));
+    lemma_view_u64_set_contains(m.dom(), c);
+}
+
+pub broadcast proof fn lemma_view_txns_map_dom(m: Map<u64, ExecTxn>, c: int)
+    ensures
+        #[trigger] view_txns_map(m).dom().contains(c) <==> (in_u64(c) && m.contains_key(c as u64)),
+{
+    broadcast use vstd::map::group_map_lemmas;
+    assert(view_txns_map(m).dom() =~= m.dom().map(|k: u64| k as int));
+    assert(view_u64_set(m.dom()) =~= m.dom().map(|k: u64| k as int));
+    lemma_view_u64_set_contains(m.dom(), c);
+}
+
+pub broadcast group group_l2_view_bridge {
+    lemma_view_u64_set_contains,
+    lemma_view_vec_u64_set_contains,
+    lemma_writes_set_contains,
+    lemma_view_u64_map_dom,
+    lemma_view_txns_map_dom,
 }
 
 pub proof fn lemma_last_val_push(s: Seq<(u64, u64)>, c: u64, v: u64, x: u64)
@@ -1556,6 +2424,7 @@ pub proof fn lemma_writes_push(s: Seq<(u64, u64)>, c: u64, v: u64)
         writes_set(s.push((c, v))) =~= writes_set(s).insert(c as int),
         writes_map(s.push((c, v))) =~= writes_map(s).insert(c as int, v as int),
 {
+    broadcast use group_l2_view_bridge;
     lemma_u64_roundtrip(c);
     assert forall |x: int| #[trigger] in_u64(x) implies (x as u64) as int == x by {
         lemma_int_roundtrip(x);
@@ -1599,7 +2468,39 @@ pub proof fn lemma_writes_push(s: Seq<(u64, u64)>, c: u64, v: u64)
             assert(0 <= (s.len() as int) < sp.len() && sp[s.len() as int].0 == y as u64);
         }
     }
+
+    // 2026-09-15  round 20: membership element by element through the bridge,
+    // then the map's domain and values, instead of two bare =~= goals.
+    assert forall |y: int|
+        #[trigger] writes_set(sp).contains(y) <==> writes_set(s).insert(c as int).contains(y)
+    by {
+        lemma_writes_set_contains(sp, y);
+        lemma_writes_set_contains(s, y);
+        vstd::set::lemma_set_insert_same(writes_set(s), c as int);
+        if y != c as int {
+            vstd::set::lemma_set_insert_different(writes_set(s), y, c as int);
+        }
+    }
     assert(writes_set(sp) =~= writes_set(s).insert(c as int));
+
+    vstd::map::lemma_map_insert_domain(writes_map(s), c as int, v as int);
+    assert(writes_map(sp).dom() =~= writes_set(sp));
+    assert(writes_map(s).dom() =~= writes_set(s));
+    assert(writes_map(sp).dom() =~= writes_map(s).insert(c as int, v as int).dom());
+    assert forall |y: int|
+        #[trigger] writes_map(sp).dom().contains(y)
+        implies writes_map(sp)[y] == writes_map(s).insert(c as int, v as int)[y]
+    by {
+        lemma_writes_set_contains(sp, y);
+        if in_u64(y) {
+            lemma_int_roundtrip(y);
+        }
+        vstd::map::lemma_map_insert_same(writes_map(s), c as int, v as int);
+        if y != c as int {
+            vstd::set::lemma_set_insert_different(writes_set(s), y, c as int);
+            vstd::map::axiom_map_insert_different(writes_map(s), y, c as int, v as int);
+        }
+    }
     assert(writes_map(sp) =~= writes_map(s).insert(c as int, v as int));
 }
 
@@ -1608,6 +2509,7 @@ pub proof fn lemma_publish_push(cv: Map<int, int>, s: Seq<(u64, u64)>, c: u64, v
         publish_writes(cv, writes_set(s.push((c, v))), writes_map(s.push((c, v))))
             =~= publish_writes(cv, writes_set(s), writes_map(s)).insert(c as int, v as int),
 {
+    broadcast use group_l2_view_bridge;
     lemma_writes_push(s, c, v);
     let ws = writes_set(s);
     let wv = writes_map(s);
@@ -1624,6 +2526,7 @@ pub proof fn lemma_publish_writer_push(cw: Map<int, int>, s: Seq<(u64, u64)>, wr
         publish_writer(cw, writes_set(s.push((c, v))), writer)
             =~= publish_writer(cw, writes_set(s), writer).insert(c as int, writer),
 {
+    broadcast use group_l2_view_bridge;
     lemma_writes_push(s, c, v);
     let ws = writes_set(s);
     let cc = c as int;
@@ -1662,6 +2565,7 @@ impl L2Runtime {
 
     pub open spec fn wf(self) -> bool {
         &&& inv_l2(self.view())
+        &&& inv_output_commit(self.view())
         &&& self.fresh_ok()
         &&& self.keys_contiguous()
     }
@@ -1685,22 +2589,29 @@ impl L2Runtime {
             assert(r.view() =~= initial_state());
             lemma_initial_inv_l2();
             assert(inv_l2(r.view()));
+            lemma_initial_inv_output_commit();
+            assert(inv_output_commit(r.view()));
             assert(r.keys_contiguous());
         }
         r
     }
 
-    pub fn begin(&mut self) -> (t: u64)
+    pub fn begin(&mut self) -> (r: Option<u64>)
         requires
             old(self).wf(),
-            old(self).now < u64::MAX,
-            old(self).next_txn < u64::MAX,
         ensures
             final(self).wf(),
-            final(self).view() == step_begin(old(self).view(), t as int),
-            !old(self).txns@.contains_key(t),
+            (r is Some) == (old(self).now < u64::MAX && old(self).next_txn < u64::MAX),
+            r is Some ==> final(self).view() == step_begin(old(self).view(), r->0 as int)
+                && !old(self).txns@.contains_key(r->0),
+            r is None ==> final(self).view() == old(self).view(),
     {
         broadcast use vstd::std_specs::hash::group_hash_axioms;
+        // 2026-09-16 round 26 (G8): an erased build does not check `requires`, so
+        // this entry point checks its own precondition and refuses instead.
+        if self.now == u64::MAX || self.next_txn == u64::MAX {
+            return None;
+        }
         let t = self.next_txn;
 
         proof {
@@ -1722,6 +2633,7 @@ impl L2Runtime {
             assert(self.view().all_txns =~= step_begin(old(self).view(), t as int).all_txns);
             assert(self.view() =~= step_begin(old(self).view(), t as int));
             lemma_begin_preserves_inv_l2(old(self).view(), t as int);
+            lemma_begin_preserves_inv_output_commit(old(self).view(), t as int);
             assert(inv_l2(self.view()));
             assert forall |kk: u64| #[trigger] self.txns@.contains_key(kk)
                 implies (kk as int) < (self.next_txn as int) by {
@@ -1748,22 +2660,30 @@ impl L2Runtime {
                 }
             }
         }
-        t
+        Some(t)
     }
 
     // write: record a single write (cell c := value v) in txn t's write-set.
-    pub fn write(&mut self, t: u64, c: u64, v: u64)
+    pub fn write(&mut self, t: u64, c: u64, v: u64) -> (ok: bool)
         requires
             old(self).wf(),
-            old(self).now < u64::MAX,
-            old(self).txns@.contains_key(t),
-            !old(self).txns@[t].committed,
         ensures
             final(self).wf(),
-            final(self).view()
+            ok == (old(self).now < u64::MAX && write_valid(old(self).view(), t as int)),
+            ok ==> final(self).view()
                 == step_write(old(self).view(), t as int, c as int, v as int),
+            !ok ==> final(self).view() == old(self).view(),
     {
         broadcast use vstd::std_specs::hash::group_hash_axioms;
+        // 2026-09-16 round 26 (G8): an erased build does not check `requires`, so
+        // this entry point checks its own precondition and refuses instead.
+        proof { lemma_u64_roundtrip(t); lemma_txns_get_view(self.txns@, t); }
+        if self.now == u64::MAX || !self.txns.contains_key(&t) {
+            return false;
+        }
+        if self.txns.get(&t).unwrap().committed {
+            return false;
+        }
         let ghost old_txns = self.txns@;
         let ghost old_view = self.view();
         let ghost old_txn = old_txns[t];
@@ -1790,6 +2710,7 @@ impl L2Runtime {
             assert(self.view() =~= step_write(old_view, t as int, c as int, v as int));
             // Preservation via the existing model lemma.
             lemma_write_preserves_inv_l2(old_view, t as int, c as int, v as int);
+            lemma_write_preserves_inv_output_commit(old_view, t as int, c as int, v as int);
             assert(inv_l2(self.view()));
             // fresh_ok preserved: key set unchanged (t was already present).
             assert forall |kk: u64| #[trigger] self.txns@.contains_key(kk)
@@ -1805,6 +2726,7 @@ impl L2Runtime {
                 assert(old_txns.contains_key(k) == old(self).txns@.contains_key(k));
             }
         }
+        true
     }
 
     // commit: publish txn t's writes and mark it committed. Refines
@@ -1874,6 +2796,7 @@ impl L2Runtime {
                 lemma_u64_roundtrip(c);
                 lemma_cells_get_view(self.cell_value@, c);
                 // the witness, in the TRIGGER's own term
+                lemma_view_vec_u64_set_contains(txn.read_set@, c as int);
                 assert(sv.txns[t as int].read_set.contains(c as int));
             }
             if !self.cell_value.contains_key(&c) {
@@ -1940,6 +2863,7 @@ impl L2Runtime {
             proof {
                 lemma_u64_roundtrip(p);
                 lemma_txns_get_view(self.txns@, p);
+                lemma_view_vec_u64_set_contains(txn.predecessors@, p as int);
                 assert(sv.txns[t as int].predecessors.contains(p as int));
             }
             if !self.txns.contains_key(&p) {
@@ -1978,17 +2902,23 @@ impl L2Runtime {
         true
     }
 
-    pub fn commit(&mut self, t: u64)
+    pub fn commit(&mut self, t: u64) -> (ok: bool)
         requires
             old(self).wf(),
-            old(self).now < u64::MAX,
-            old(self).txns@.contains_key(t),
-            commit_valid(old(self).view(), t as int),
         ensures
             final(self).wf(),
-            final(self).view() == step_commit(old(self).view(), t as int),
+            ok == (old(self).now < u64::MAX && commit_valid(old(self).view(), t as int)),
+            ok ==> final(self).view() == step_commit(old(self).view(), t as int),
+            !ok ==> final(self).view() == old(self).view(),
     {
         broadcast use vstd::std_specs::hash::group_hash_axioms;
+        // 2026-09-16 round 26 (G8): an erased build does not check `requires`, so
+        // this entry point checks its own precondition and refuses instead.
+        // It decides commit_valid with can_commit rather than trusting the caller to.
+        if self.now == u64::MAX || !self.can_commit(t) {
+            return false;
+        }
+        proof { lemma_u64_roundtrip(t); lemma_txns_get_view(self.txns@, t); }
         let ghost old_view = self.view();
         let ghost old_txns = self.txns@;
         let ghost old_cv = old_view.cell_value;
@@ -2084,6 +3014,7 @@ impl L2Runtime {
             assert(self.view().all_txns =~= sc.all_txns);
             assert(self.view() == sc);
             lemma_commit_preserves_inv_l2(old_view, t as int);
+            lemma_commit_preserves_inv_output_commit(old_view, t as int);
             assert(inv_l2(self.view()));
             assert forall |kk: u64| #[trigger] self.txns@.contains_key(kk)
                 implies (kk as int) < (self.next_txn as int) by {
@@ -2098,24 +3029,36 @@ impl L2Runtime {
                 assert(old_txns.contains_key(k) == old(self).txns@.contains_key(k));
             }
         }
+        true
     }
 
     // read: txn t reads cell c. Records the value and provenance (writer),
     // stamps the read time, and unions the writer's causal closure into t's
     // predecessors so that one-level cascade_abort is sufficient. Refines
     // step_read; preserves wf via lemma_read_preserves_inv_l2.
-    pub fn read(&mut self, t: u64, c: u64)
+    pub fn read(&mut self, t: u64, c: u64) -> (ok: bool)
         requires
             old(self).wf(),
-            old(self).now < u64::MAX,
-            old(self).txns@.contains_key(t),
-            old(self).cell_value@.contains_key(c),
-            !old(self).txns@[t].committed,
         ensures
             final(self).wf(),
-            final(self).view() == step_read(old(self).view(), t as int, c as int),
+            ok == (old(self).now < u64::MAX && read_valid(old(self).view(), t as int, c as int)),
+            ok ==> final(self).view() == step_read(old(self).view(), t as int, c as int),
+            !ok ==> final(self).view() == old(self).view(),
     {
         broadcast use vstd::std_specs::hash::group_hash_axioms;
+        // 2026-09-16 round 26 (G8): an erased build does not check `requires`, so
+        // this entry point checks its own precondition and refuses instead.
+        proof {
+            lemma_u64_roundtrip(t);
+            lemma_txns_get_view(self.txns@, t);
+            lemma_cells_get_view(self.cell_value@, c);
+        }
+        if self.now == u64::MAX || !self.txns.contains_key(&t) || !self.cell_value.contains_key(&c) {
+            return false;
+        }
+        if self.txns.get(&t).unwrap().committed {
+            return false;
+        }
         let ghost old_view = self.view();
         let ghost old_txns = self.txns@;
         let ghost txn0 = old_txns[t];
@@ -2287,6 +3230,7 @@ impl L2Runtime {
             assert(self.view() == sr);
             // Preservation via the existing model lemma.
             lemma_read_preserves_inv_l2(old_view, t as int, c as int);
+            lemma_read_preserves_inv_output_commit(old_view, t as int, c as int);
             assert(inv_l2(self.view()));
             // fresh_ok + keys_contiguous: key set and next_txn unchanged.
             assert(self.txns@.dom() =~= old_txns.dom());
@@ -2300,6 +3244,7 @@ impl L2Runtime {
                 assert(old_txns.contains_key(k) == old(self).txns@.contains_key(k));
             }
         }
+        true
     }
 
     // Linear scan: does txn u's predecessor Vec contain t?
@@ -2331,20 +3276,36 @@ impl L2Runtime {
     // closed) predecessor set contains t. Keys are exactly [0, next_txn), so
     // the cascade is a single scan of that range. Refines step_abort; preserves
     // wf via lemma_abort_preserves_inv_l2.
-    pub fn abort(&mut self, t: u64)
+    pub fn abort(&mut self, t: u64) -> (ok: bool)
         requires
             old(self).wf(),
-            old(self).now < u64::MAX,
-            old(self).txns@.contains_key(t),
         ensures
             final(self).wf(),
-            final(self).view() == step_abort(old(self).view(), t as int),
+            ok == (old(self).now < u64::MAX && abort_valid(old(self).view(), t as int)),
+            ok ==> final(self).view() == step_abort(old(self).view(), t as int),
+            !ok ==> final(self).view() == old(self).view(),
     {
         broadcast use vstd::std_specs::hash::group_hash_axioms;
         let ghost old_view = self.view();
         let ghost old_txns = self.txns@;
         let ghost old_cv = self.cell_value@;
         let ghost old_cw = self.cell_writer@;
+
+        // 2026-09-15 round 24: an externalized transaction is irrevocable, so
+        // abort refuses it and changes nothing.
+        // 2026-09-16 round 26 (G8): an erased build does not check `requires`, so
+        // this entry point checks its own precondition and refuses instead.
+        proof { lemma_u64_roundtrip(t); lemma_txns_get_view(old_txns, t); }
+        if self.now == u64::MAX || !self.txns.contains_key(&t) {
+            return false;
+        }
+        let is_externalized = self.txns.get(&t).unwrap().externalized;
+        proof {
+            assert(old_view.txns[t as int].externalized == is_externalized);
+        }
+        if is_externalized {
+            return false;
+        }
 
         // Step 1: mark t aborted.
         let mut txn_t = self.txns.remove(&t).unwrap();
@@ -2475,6 +3436,7 @@ impl L2Runtime {
             assert(self.view() == sa);
             // Preservation via the existing model lemma.
             lemma_abort_preserves_inv_l2(old_view, t as int);
+            lemma_abort_preserves_inv_output_commit(old_view, t as int);
             assert(inv_l2(self.view()));
             // fresh_ok + keys_contiguous: key set and next_txn unchanged.
             assert(self.txns@.dom() =~= base_txns.dom());
@@ -2487,6 +3449,135 @@ impl L2Runtime {
                 assert(self.txns@.contains_key(k) <==> base_txns.contains_key(k));
             }
         }
+        true
+    }
+
+    /// A verified decision procedure for externalize_valid (2026-09-16 round 26).
+    /// The same scan as can_commit's predecessor loop, with `externalized` in
+    /// place of committed-and-not-aborted.
+    pub fn can_externalize(&self, t: u64) -> (b: bool)
+        requires
+            self.wf(),
+        ensures
+            b == externalize_valid(self.view(), t as int),
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        let ghost sv = self.view();
+        proof { lemma_u64_roundtrip(t); lemma_txns_get_view(self.txns@, t); }
+
+        if !self.txns.contains_key(&t) {
+            proof { assert(!sv.txns.contains_key(t as int)); }
+            return false;
+        }
+        let txn: &ExecTxn = self.txns.get(&t).unwrap();
+        proof { assert(sv.txns[t as int] == txn.view()); }
+
+        if !txn.committed || txn.aborted || txn.externalized { return false; }
+
+        let pn: usize = txn.predecessors.len();
+        let mut j: usize = 0;
+        while j < pn
+            invariant
+                0 <= j <= pn,
+                pn == txn.predecessors.len(),
+                sv == self.view(),
+                self.txns@.contains_key(t),
+                self.txns@[t] == *txn,
+                sv.txns[t as int] == txn.view(),
+                self.wf(),
+                forall |k: int| 0 <= k < j ==> {
+                    let pp = #[trigger] txn.predecessors@[k];
+                    &&& sv.txns.contains_key(pp as int)
+                    &&& sv.txns[pp as int].externalized
+                },
+            decreases pn - j
+        {
+            let p: u64 = txn.predecessors[j];
+            proof {
+                lemma_u64_roundtrip(p);
+                lemma_txns_get_view(self.txns@, p);
+                lemma_view_vec_u64_set_contains(txn.predecessors@, p as int);
+                assert(sv.txns[t as int].predecessors.contains(p as int));
+            }
+            if !self.txns.contains_key(&p) {
+                proof {
+                    assert(!sv.txns.contains_key(p as int));
+                    assert(!externalize_valid(sv, t as int));
+                }
+                return false;
+            }
+            let q: &ExecTxn = self.txns.get(&p).unwrap();
+            proof { assert(sv.txns[p as int] == q.view()); }
+            if !q.externalized {
+                proof {
+                    assert(sv.txns[p as int].externalized == q.externalized);
+                    assert(!externalize_valid(sv, t as int));
+                }
+                return false;
+            }
+            j = j + 1;
+        }
+        proof {
+            assert forall |p: int| #[trigger] sv.txns[t as int].predecessors.contains(p) implies {
+                &&& sv.txns.contains_key(p)
+                &&& sv.txns[p].externalized
+            } by {
+                assert(exists |k: int| 0 <= k < pn && txn.predecessors@[k] as int == p);
+                let k = choose |k: int| 0 <= k < pn && txn.predecessors@[k] as int == p;
+                lemma_u64_roundtrip(txn.predecessors@[k]);
+                lemma_txns_get_view(self.txns@, txn.predecessors@[k]);
+            }
+            assert(externalize_valid(sv, t as int));
+        }
+        true
+    }
+
+    // externalize: the output-commit step (2026-09-16 round 26). A committed
+    // transaction's effects may leave the runtime only once every transaction
+    // in its causal closure has left; from then on abort refuses it. Refines
+    // step_externalize and decides its own precondition (G8).
+    pub fn externalize(&mut self, t: u64) -> (ok: bool)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            ok == (old(self).now < u64::MAX && externalize_valid(old(self).view(), t as int)),
+            ok ==> final(self).view() == step_externalize(old(self).view(), t as int),
+            !ok ==> final(self).view() == old(self).view(),
+    {
+        broadcast use vstd::std_specs::hash::group_hash_axioms;
+        if self.now == u64::MAX || !self.can_externalize(t) {
+            return false;
+        }
+        proof { lemma_u64_roundtrip(t); lemma_txns_get_view(self.txns@, t); }
+        let ghost old_txns = self.txns@;
+        let ghost old_view = self.view();
+        let ghost old_txn = old_txns[t];
+        let mut txn = self.txns.remove(&t).unwrap();
+        txn.externalized = true;
+        self.txns.insert(t, txn);
+        self.now = self.now + 1;
+        proof {
+            assert(old_view.txns[t as int] == old_txn.view());
+            assert(txn.view() =~= TxnState { externalized: true, ..old_view.txns[t as int] });
+            assert(self.txns@ =~= old_txns.insert(t, txn));
+            lemma_view_txns_insert(old_txns, t, txn);
+            assert(self.view() =~= step_externalize(old_view, t as int));
+            lemma_externalize_preserves_inv_l2(old_view, t as int);
+            lemma_externalize_preserves_inv_output_commit(old_view, t as int);
+            assert(inv_l2(self.view()));
+            assert forall |kk: u64| #[trigger] self.txns@.contains_key(kk)
+                implies (kk as int) < (self.next_txn as int) by {
+                assert(old_txns.contains_key(kk) || kk == t);
+            }
+            assert(self.txns@.dom() =~= old_txns.dom());
+            assert forall |k: u64| #[trigger] self.txns@.contains_key(k)
+                <==> (k as int) < (self.next_txn as int) by {
+                assert(self.txns@.contains_key(k) <==> old_txns.contains_key(k));
+                assert(old_txns.contains_key(k) == old(self).txns@.contains_key(k));
+            }
+        }
+        true
     }
 
     // CAPSTONE: any wf runtime is A_3-free. Holds now for the new+begin
@@ -2494,7 +3585,7 @@ impl L2Runtime {
     // this theorem covers the full runtime unchanged.
     pub fn a3_free(&self)
         requires self.wf(),
-        ensures forall |t: TxnId| #![trigger self.view().txns[t].committed]
+        ensures forall |t: TxnId| #![trigger a3_witness(self.view(), t)]
             !a3_witness(self.view(), t),
     {
         proof {

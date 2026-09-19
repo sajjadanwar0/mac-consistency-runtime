@@ -1,4 +1,5 @@
-//! l2_unguarded.rs -- an L1-class store that does NOT cascade.
+//! l2_unguarded.rs -- an L1-class store that does NOT cascade and releases
+//! every transaction's effects at commit.
 //!
 //! This is the baseline the L2 discipline is measured against.  It is
 //! ordinary Rust: no vstd, no proofs, no invariant, and it carries NO
@@ -8,11 +9,16 @@
 //! execution rather than a relabelling of the guarded one.
 //!
 //! What it does: validates a committing transaction's read set against
-//! the current store (so it is L1-class, not L0 -- it prevents A1), and
-//! on abort marks only the aborted transaction.  Dependents that read a
-//! value the aborted transaction wrote survive with a retracted basis.
-//! That surviving-dependent-of-an-aborted-operation condition is
-//! Definition 3.
+//! the current store (so it is L1-class, not L0 -- it prevents A1),
+//! releases the transaction's effects at commit, and on abort marks only
+//! the aborted transaction.  A dependent that read a value the aborted
+//! transaction wrote has effects already out on a retracted basis: A3.
+//!
+//! 2026-09-16 round 28: `externalized` is set here, in `commit`, because
+//! a store without output commit releases effects when a transaction
+//! commits; the measurement reads the flag, it does not derive it.
+//! OVERRULED (rounds <= 26): A3 was a surviving (committed, unaborted)
+//! dependent of an aborted operation, "Definition 3".
 
 use std::collections::BTreeMap;
 
@@ -21,6 +27,8 @@ pub struct Txn {
     pub started: bool,
     pub committed: bool,
     pub aborted: bool,
+    /// effects released; at commit, in this store
+    pub externalized: bool,
     pub read_cells: Vec<u64>,
     pub read_values: BTreeMap<u64, u64>,
     pub predecessors: Vec<u64>,
@@ -43,6 +51,7 @@ impl UnguardedStore {
             started: true,
             committed: false,
             aborted: false,
+            externalized: false,
             read_cells: Vec::new(),
             read_values: BTreeMap::new(),
             predecessors: Vec::new(),
@@ -97,6 +106,7 @@ impl UnguardedStore {
             self.cell_writer.insert(*c, t);
         }
         self.txns[t as usize].committed = true;
+        self.txns[t as usize].externalized = true;
         true
     }
 

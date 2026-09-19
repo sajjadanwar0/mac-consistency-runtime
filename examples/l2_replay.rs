@@ -1,10 +1,14 @@
 //! Replay recorded live sessions through the verified L2 runtime.
 //!   cargo run --release --example l2_replay -- tools/live_l2/sessions
+//!
+//! 2026-09-16 round 28: A3 is the executor's effects out while its plan is
+//! retracted; "released" is the share of sessions whose executor's effects
+//! left the verified runtime (OVERRULED: "liveness", a surviving executor).
 use std::{collections::BTreeMap, env, fs};
 
 fn main() {
     let dir = env::args().nth(1).unwrap_or_else(|| "tools/live_l2/sessions".into());
-    let mut per: BTreeMap<String, [u64; 5]> = BTreeMap::new(); // n, retracted, g_a3, u_a3, g_live
+    let mut per: BTreeMap<String, [u64; 5]> = BTreeMap::new(); // n, retracted, g_a3, u_a3, g_released
     let mut files = 0usize;
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
@@ -20,16 +24,16 @@ fn main() {
         let e = per.entry(s.model.clone()).or_insert([0; 5]);
         e[0] += 1;
         if s.retracted { e[1] += 1; }
-        let (g_a3, g_live) = agent_consistency_runtime::l2_replay_lib::replay_guarded(&s);
+        let (g_a3, g_released) = agent_consistency_runtime::l2_replay_lib::replay_guarded(&s);
         let (u_a3, _) = agent_consistency_runtime::l2_replay_lib::replay_unguarded(&s);
         if s.retracted {
             if g_a3 { e[2] += 1; }
             if u_a3 { e[3] += 1; }
         }
-        if g_live { e[4] += 1; }
+        if g_released { e[4] += 1; }
     }
     if files == 0 { eprintln!("no sessions found in {dir}"); std::process::exit(2); }
-    println!("{:<24} {:>5} {:>10} {:>12} {:>12} {:>10}", "model", "n", "retracted", "verified A3", "baseline A3", "liveness");
+    println!("{:<24} {:>5} {:>10} {:>12} {:>12} {:>10}", "model", "n", "retracted", "verified A3", "baseline A3", "released");
     let (mut tn, mut tr, mut tg, mut tu, mut tl) = (0u64, 0u64, 0u64, 0u64, 0u64);
     for (m, e) in &per {
         println!("{:<24} {:>5} {:>10} {:>12} {:>12} {:>9.1}%", m, e[0], e[1],
